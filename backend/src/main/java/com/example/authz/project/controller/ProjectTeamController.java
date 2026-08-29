@@ -66,6 +66,30 @@ public class ProjectTeamController {
     }
 
     /**
+     * 直接添加一位用户作为项目协作者。
+     * <p>
+     * 写入元组 {@code project:{id}#{relation}@user:{userId}}。
+     *
+     * @param id   项目主键
+     * @param body 请求体，含 userId 与 relation（默认 editor）
+     * @return 空响应
+     */
+    @PostMapping("/{id}/collaborators/user")
+    public ApiResponse<Void> addUserCollaborator(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> body
+    ) {
+        Object uid = body.get("userId");
+        if (uid == null) {
+            throw new IllegalArgumentException("userId 字段必填");
+        }
+        Long userId = Long.valueOf(uid.toString());
+        String relation = body.get("relation") == null ? null : body.get("relation").toString();
+        projectService.addUserCollaborator(id, userId, relation);
+        return ApiResponse.success();
+    }
+
+    /**
      * 切换团队-项目角色（viewer / editor / manager）。
      *
      * @param id       项目主键

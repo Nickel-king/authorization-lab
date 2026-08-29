@@ -147,6 +147,8 @@ public class PolicyServiceImpl
                         cDto.getValueSource()
                 );
                 condition.setValue(cDto.getValue());
+                condition.setParentId(cDto.getParentId());
+                condition.setLogicalOperator(cDto.getLogicalOperator());
                 condition.setSortOrder(
                         cDto.getSortOrder() != null
                                 ? cDto.getSortOrder()
@@ -241,6 +243,8 @@ public class PolicyServiceImpl
                         cDto.getValueSource()
                 );
                 condition.setValue(cDto.getValue());
+                condition.setParentId(cDto.getParentId());
+                condition.setLogicalOperator(cDto.getLogicalOperator());
                 condition.setSortOrder(
                         cDto.getSortOrder() != null
                                 ? cDto.getSortOrder()

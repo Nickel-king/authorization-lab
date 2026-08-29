@@ -30,15 +30,18 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * 项目（Project）服务实现——仅团队维度绑定。
+ * 项目（Project）服务实现——ReBAC Hybrid 协作模型。
  * <p>
- * 去除散装用户直接挂载，所有协作关系以 ReBAC元组
- * {@code project:{projectId}#{relation}@team:{teamId}#member} 统一表达，
- * 并在 {@link #getTeamBinding} 中一次性聚合出 Tab 1（绑定团队卡片）与
- * Tab 2（穿透有效成员）所需的全部数据。
+ * 项目数据面协作关系全部通过 {@code auth_relation_tuple} 表达，支持：
+ * <ul>
+ *   <li>直接用户：{@code project:{id}#{relation}@user:{userId}}</li>
+ *   <li>团队 Userset：{@code project:{id}#{relation}@team:{teamId}#member}</li>
+ * </ul>
+ * 在 {@link #getTeamBinding} 中一次性聚合出 Tab 1（绑定团队卡片）与
+ * Tab 2（穿透有效成员，含直接授权用户）所需的全部数据。
  *
  * @author Nickel
- * @since 2026-08-28
+ * @since 2026-08-29
  */
 @Service
 @RequiredArgsConstructor
@@ -55,11 +58,11 @@ public class ProjectServiceImpl
     /** 团队服务：解析绑定团队及其成员 */
     private final TeamService teamService;
 
-    /** 允许的项目-团队关系集合（协作角色 + 归属团队） */
+    /** 允许的项目-主体关系集合（协作角色 + 归属团队） */
     private static final Set<String> ALLOWED_RELATIONS =
             Set.of(ROLE_VIEWER, ROLE_EDITOR, ROLE_MANAGER, RELATION_BELONGS_TEAM);
 
-    /** 协作角色取值集合（用于角色切换校验，不含归属 team） */
+    /** 协作角色取值集合（用于角色切换与用户直接授权校验，不含归属 team） */
     private static final Set<String> COLLAB_ROLES =
             Set.of(ROLE_VIEWER, ROLE_EDITOR, ROLE_MANAGER);
 
@@ -75,12 +78,16 @@ public class ProjectServiceImpl
             throw new IllegalArgumentException("项目不存在: id=" + projectId);
         }
 
-        // 2. 拉取项目绑定的团队元组（仅团队主体）
+        // 2. 拉取项目的全部协作元组（用户直挂 + 团队 Userset）
         List<RelationTuple> tuples = relationTupleService.listTuples(
                 null, null, "project", String.valueOf(projectId));
         List<RelationTuple> teamTuples = tuples.stream()
                 .filter(t -> SUBJECT_TEAM.equals(t.getSubjectType())
                         && ALLOWED_RELATIONS.contains(t.getRelation()))
+                .collect(Collectors.toList());
+        List<RelationTuple> userTuples = tuples.stream()
+                .filter(t -> SUBJECT_USER.equals(t.getSubjectType())
+                        && COLLAB_ROLES.contains(t.getRelation()))
                 .collect(Collectors.toList());
 
         // 3. 全量团队/用户映射（避免循环查库）
@@ -108,7 +115,24 @@ public class ProjectServiceImpl
 
         // 5. Tab 2：穿透聚合有效成员（按 userId 去重，保留首次出现）
         Map<Long, TeamMemberItem> resolved = new LinkedHashMap<>();
-        // 按 relation 排序：归属 team 先（通常仅展示其成员但非协作角色）→ viewer → editor → manager
+
+        // 5.1 直接授权用户优先落位（putIfAbsent，覆盖后续团队继承的同用户）
+        for (RelationTuple t : userTuples) {
+            Long uid = Long.valueOf(t.getSubjectId());
+            User u = userById.get(uid);
+            if (u == null) continue;
+            resolved.putIfAbsent(uid, TeamMemberItem.builder()
+                    .userId(uid)
+                    .username(u.getUsername())
+                    .displayName(u.getDisplayName())
+                    .department(u.getDepartment())
+                    .fromTeamName(SOURCE_DIRECT)
+                    .effectiveRole(t.getRelation())
+                    .build());
+        }
+
+        // 5.2 再展开绑定团队的有效成员（未被直接授权覆盖的用户进入）
+        // 按 relation 排序：归属 team 先→viewer→editor→manager（较宽松角色优先保留）
         List<RelationTuple> ordered = teamTuples.stream()
                 .sorted(Comparator.comparingInt(t -> relationPriority(t.getRelation())))
                 .collect(Collectors.toList());
@@ -149,10 +173,7 @@ public class ProjectServiceImpl
     @Override
     public void bindTeam(Long projectId, ProjectTeamAssignDTO dto) {
 
-        // 1. 前置校验
-        if (getById(projectId) == null) {
-            throw new IllegalArgumentException("项目不存在: id=" + projectId);
-        }
+        // 1. 参数校验后委托给团队整体绑定
         if (dto == null
                 || !StringUtils.hasText(dto.getTeamId())
                 || !StringUtils.hasText(dto.getRelation())) {
@@ -161,33 +182,82 @@ public class ProjectServiceImpl
         if (!ALLOWED_RELATIONS.contains(dto.getRelation())) {
             throw new IllegalArgumentException("非法的团队关系: " + dto.getRelation());
         }
+        addTeamCollaborator(projectId, Long.parseLong(dto.getTeamId()), dto.getRelation());
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void addUserCollaborator(Long projectId, Long userId, String relation) {
+
+        // 1. 校验项目与角色
+        if (getById(projectId) == null) {
+            throw new IllegalArgumentException("项目不存在: id=" + projectId);
+        }
+        String role = StringUtils.hasText(relation) ? relation : ROLE_EDITOR;
+        if (!COLLAB_ROLES.contains(role)) {
+            throw new IllegalArgumentException("非法的协作角色: " + role);
+        }
+
+        // 2. 校验用户存在
+        if (userService.getById(userId) == null) {
+            throw new IllegalArgumentException("用户不存在: id=" + userId);
+        }
+
+        // 3. 幂等校验：同资源/关系/用户已存在则拒绝
+        List<RelationTuple> exist = relationTupleService.listTuples(
+                SUBJECT_USER, String.valueOf(userId), "project", String.valueOf(projectId));
+        boolean duplicated = exist.stream().anyMatch(e -> e.getRelation().equals(role));
+        if (duplicated) {
+            throw new IllegalArgumentException("该用户已以相同角色加入此项目");
+        }
+
+        // 4. 写入元组：project:{id}#{relation}@user:{userId}
+        RelationTupleCreateDTO tuple = new RelationTupleCreateDTO();
+        tuple.setResourceType("project");
+        tuple.setResourceId(String.valueOf(projectId));
+        tuple.setRelation(role);
+        tuple.setSubjectType(SUBJECT_USER);
+        tuple.setSubjectId(String.valueOf(userId));
+        relationTupleService.createTuple(tuple);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void addTeamCollaborator(Long projectId, Long teamId, String relation) {
+
+        // 1. 校验项目与角色
+        if (getById(projectId) == null) {
+            throw new IllegalArgumentException("项目不存在: id=" + projectId);
+        }
+        String role = StringUtils.hasText(relation) ? relation : ROLE_EDITOR;
+        if (!ALLOWED_RELATIONS.contains(role)) {
+            throw new IllegalArgumentException("非法的协作角色: " + role);
+        }
 
         // 2. 校验团队存在
-        Long teamId;
-        try {
-            teamId = Long.valueOf(dto.getTeamId());
-        } catch (NumberFormatException ex) {
-            throw new IllegalArgumentException("非法的团队 ID: " + dto.getTeamId());
-        }
         if (teamService.getById(teamId) == null) {
             throw new IllegalArgumentException("团队不存在: id=" + teamId);
         }
 
         // 3. 幂等校验：同资源/关系/团队已存在则拒绝
         List<RelationTuple> exist = relationTupleService.listTuples(
-                SUBJECT_TEAM, dto.getTeamId(), "project", String.valueOf(projectId));
-        boolean duplicated = exist.stream().anyMatch(e -> e.getRelation().equals(dto.getRelation()));
+                SUBJECT_TEAM, String.valueOf(teamId), "project", String.valueOf(projectId));
+        boolean duplicated = exist.stream().anyMatch(e -> e.getRelation().equals(role));
         if (duplicated) {
-            throw new IllegalArgumentException("该团队已以相同角色绑定过此项目");
+            throw new IllegalArgumentException("该团队已以相同角色加入此项目");
         }
 
-        // 4. 构建元组（subjectRelation 固定为 member，表达 team Userset）
+        // 4. 写入 Userset 元组：project:{id}#{relation}@team:{teamId}#member
         RelationTupleCreateDTO tuple = new RelationTupleCreateDTO();
         tuple.setResourceType("project");
         tuple.setResourceId(String.valueOf(projectId));
-        tuple.setRelation(dto.getRelation());
+        tuple.setRelation(role);
         tuple.setSubjectType(SUBJECT_TEAM);
-        tuple.setSubjectId(dto.getTeamId());
+        tuple.setSubjectId(String.valueOf(teamId));
         tuple.setSubjectRelation(SUBJECT_RELATION_MEMBER);
         relationTupleService.createTuple(tuple);
     }
@@ -198,10 +268,10 @@ public class ProjectServiceImpl
     @Override
     public void unbindTeam(Long projectId, Long tupleId) {
 
-        // 定位元组：校验归属当前项目且主体为 team
+        // 定位元组：归属当前项目（用户直挂 或 团队 Userset 皆可解除）
         RelationTuple tuple = relationTupleService.listTuples(
                         null, null, "project", String.valueOf(projectId)).stream()
-                .filter(t -> t.getId().equals(tupleId) && SUBJECT_TEAM.equals(t.getSubjectType()))
+                .filter(t -> t.getId().equals(tupleId))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("绑定关系不存在: tupleId=" + tupleId));
 
@@ -219,11 +289,10 @@ public class ProjectServiceImpl
             throw new IllegalArgumentException("非法的协作角色: " + relation);
         }
 
-        // 2. 定位元组：归属项目 + team 主体 + 协作类关系
+        // 2. 定位元组：归属项目 + 协作类关系（用户直挂 或 团队 Userset 皆可）
         RelationTuple tuple = relationTupleService.listTuples(
                         null, null, "project", String.valueOf(projectId)).stream()
                 .filter(t -> t.getId().equals(tupleId)
-                        && SUBJECT_TEAM.equals(t.getSubjectType())
                         && COLLAB_ROLES.contains(t.getRelation()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("绑定关系不存在或不支持角色切换: tupleId=" + tupleId));
@@ -233,7 +302,7 @@ public class ProjectServiceImpl
             return;
         }
 
-        // 4. 更新 relation 字段（subjectRelation=member 保持不变）
+        // 4. 更新 relation 字段（subjectRelation 保持原样）
         RelationTupleCreateDTO upd = new RelationTupleCreateDTO();
         upd.setResourceType(tuple.getResourceType());
         upd.setResourceId(tuple.getResourceId());

@@ -31,4 +31,16 @@ public class PolicyConditionDTO {
 
     /** 条件在同一策略内的排序序号，越小越先求值 */
     private Integer sortOrder;
+
+    /**
+     * 父节点条件 ID（AST 逻辑树用）：指向其所属逻辑分组节点。
+     * <p>为空表示顶层节点；顶层节点之间按 AND 组合。
+     */
+    private Long parentId;
+
+    /**
+     * 逻辑运算符（AST 逻辑树用）：AND / OR。
+     * <p>仅逻辑分组节点需设置；叶子比较条件留空。
+     */
+    private String logicalOperator;
 }

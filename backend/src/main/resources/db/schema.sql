@@ -285,7 +285,12 @@ COMMENT ON COLUMN auth_policy.created_at IS '记录创建时间';
 -- 描述单条策略下的一个匹配条件：比较属性
 -- （attributeSource + attributePath）与操作数
 -- （valueSource + value）是否满足指定运算符(operator)。
--- 多条条件之间按 AND 关系组合。
+-- 自 Step 08 起支持嵌套 AST 逻辑：
+--   - logical_operator 非空的行是“逻辑分组节点”（AND / OR），
+--     其 children 通过 parent_id 关联到该行；
+--   - logical_operator 为空的行是“叶子比较条件”。
+-- 顶层节点（parent_id 为空）之间按 AND 组合；
+-- 若某策略没有任何分组节点，则退化为传统扁平 AND 列表（向后兼容）。
 -- ------------------------------------------------------------
 CREATE TABLE auth_policy_condition (
     id BIGSERIAL PRIMARY KEY,
@@ -303,6 +308,12 @@ CREATE TABLE auth_policy_condition (
     value VARCHAR(500),
 
     sort_order INTEGER NOT NULL DEFAULT 0,
+
+    -- 父节点条件 ID：指向其所在逻辑分组节点（parent_id 为空表示顶层）
+    parent_id BIGINT,
+
+    -- 逻辑运算符：AND / OR（仅逻辑分组节点使用，叶子条件为空）
+    logical_operator VARCHAR(10),
 
     CONSTRAINT fk_policy_condition_policy
         FOREIGN KEY (policy_id)
@@ -327,7 +338,7 @@ CREATE TABLE auth_policy_condition (
         )
 );
 
-COMMENT ON TABLE auth_policy_condition IS '授权策略条件表：单条策略下的匹配条件，属性与值通过指定运算符比较';
+COMMENT ON TABLE auth_policy_condition IS '授权策略条件表：单条策略下的匹配条件，属性与值通过指定运算符比较；支持嵌套逻辑树(AST)';
 COMMENT ON COLUMN auth_policy_condition.id IS '条件主键，自增 ID';
 COMMENT ON COLUMN auth_policy_condition.policy_id IS '所属策略 ID，关联 auth_policy.id（级联删除）';
 COMMENT ON COLUMN auth_policy_condition.attribute_source IS '属性来源：SUBJECT / RESOURCE / CONTEXT';
@@ -336,6 +347,8 @@ COMMENT ON COLUMN auth_policy_condition.operator IS '比较运算符：EQUALS / 
 COMMENT ON COLUMN auth_policy_condition.value_source IS '右操作数来源：LITERAL（字面量）/ ATTRIBUTE（另一个属性）';
 COMMENT ON COLUMN auth_policy_condition.value IS '右操作数值：字面量或形如 resource.department 的属性表达式';
 COMMENT ON COLUMN auth_policy_condition.sort_order IS '条件在同策略内的排序序号，数字越小越先求值';
+COMMENT ON COLUMN auth_policy_condition.parent_id IS '父节点条件 ID：指向所在逻辑分组节点（空表示顶层节点）';
+COMMENT ON COLUMN auth_policy_condition.logical_operator IS '逻辑运算符 AND/OR：仅分组节点使用，叶子条件为空';
 
 INSERT INTO auth_policy
     (
@@ -843,6 +856,20 @@ INSERT INTO auth_permission
     (resource, action, code, name, description)
 VALUES
     ('report', 'delete', 'report:delete', '删除报表', '允许删除报表');
+
+-- =============================================
+-- Step 08: 策略条件嵌套逻辑树（AST）支持
+-- 为已存在的 auth_policy_condition 增量增加两列：
+--   parent_id        父节点条件 ID（空为顶层）
+--   logical_operator 分组逻辑 AND/OR（叶子为空）
+-- 新增列均为可空/无默认值，不影响既有扁平 AND 数据。
+-- =============================================
+ALTER TABLE auth_policy_condition
+    ADD COLUMN IF NOT EXISTS parent_id BIGINT NULL,
+    ADD COLUMN IF NOT EXISTS logical_operator VARCHAR(10) NULL;
+
+COMMENT ON COLUMN auth_policy_condition.parent_id IS '父节点条件 ID：指向所在逻辑分组节点（空表示顶层节点）';
+COMMENT ON COLUMN auth_policy_condition.logical_operator IS '逻辑运算符 AND/OR：仅分组节点使用，叶子条件为空';
 
 -- 项目管理员具备报表删除权限
 INSERT INTO auth_role_permission (role_id, permission_id)

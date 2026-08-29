@@ -62,6 +62,16 @@ const subjectCache = ref({ user: null, team: null })
 /** 下拉 loading 态（避免重复请求 / 显示加载占位） */
 const optionLoading = ref({ resource: false, subject: false })
 
+// 新增/编辑元组表单（必须在下方 computeds 与 watch 使用之前声明，避免 TDZ 报错）
+const tupleForm = ref({
+  resourceType: 'project',
+  resourceId: '',
+  relation: 'collaborator',
+  subjectType: 'user',
+  subjectId: '',
+  subjectRelation: ''
+})
+
 /**
  * 资源下拉选项（随 tupleForm.resourceType 自动联动，缓存命中秒出）
  * <p>由 watch 监听类型变化 → 触发 loadResourceOptions → 写入缓存 → 此 computed 自动更新</p>
@@ -188,14 +198,6 @@ const teams = ref([])
 // 新增元组弹窗
 const dialogVisible = ref(false)
 const editingTupleId = ref(null)
-const tupleForm = ref({
-  resourceType: 'project',
-  resourceId: '',
-  relation: 'collaborator',
-  subjectType: 'user',
-  subjectId: '',
-  subjectRelation: ''
-})
 
 // 拓扑图参数
 const graphInput = ref({ subjectType: 'user', subjectId: '1', resourceType: 'project', resourceId: '3' })

@@ -5,8 +5,13 @@ import com.example.authz.authorization.policy.entity.PolicyCondition;
 import com.example.authz.authorization.rebac.RelationGraphResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -122,6 +127,122 @@ public class ConditionEvaluator {
                 .rightActualValue(right)
                 .matched(matched)
                 .build();
+    }
+
+    /**
+     * 对某策略的全部条件进行 AST（逻辑树）求值，返回顶层节点轨迹列表。
+     * <p>
+     * 规则：
+     * <ul>
+     *   <li>若策略中不存在任何逻辑分组节点（所有 {@link PolicyCondition#getLogicalOperator}
+     *       均为空），则退化为传统扁平 AND 列表（向后兼容）。</li>
+     *   <li>否则将条件按 {@code parentId} 组织成树，递归求值；聚合此方法返回的
+     *       顶层分组/叶子轨迹即为该策略的完整评估结果。</li>
+     * </ul>
+     *
+     * @param conditions 策略的全部条件
+     * @param context    评估上下文（主体/资源属性）
+     * @return 顶层节点轨迹列表（策略整体匹配 = 全部顶层节点均 matched）
+     */
+    public List<ConditionTrace> evaluateConditionTree(
+            List<PolicyCondition> conditions,
+            EvaluationContext context
+    ) {
+
+        // 空条件直接返回空列表（策略不匹配）
+        if (conditions == null || conditions.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        // 1. 判断是否启用 AST 分组（存在任一逻辑分组节点）
+        boolean hasGroup = conditions.stream()
+                .anyMatch(c -> StringUtils.hasText(
+                        c.getLogicalOperator()
+                ));
+
+        // 2. 无分组：每个叶子逐个求值（向后兼容的扁平 AND 列表）
+        if (!hasGroup) {
+            return conditions.stream()
+                    .map(c -> evaluateWithTrace(c, context))
+                    .collect(java.util.stream.Collectors.toList());
+        }
+
+        // 3. 有分组：构建 id 索引，识别顶层节点（parentId 为空或指向不在本策略内的父）
+        Map<Long, PolicyCondition> byId = new HashMap<>();
+        for (PolicyCondition c : conditions) {
+            if (c.getId() != null) {
+                byId.put(c.getId(), c);
+            }
+        }
+
+        List<PolicyCondition> roots = conditions.stream()
+                .filter(c -> c.getParentId() == null
+                        || !byId.containsKey(c.getParentId()))
+                .sorted(Comparator.comparing(
+                        c -> c.getSortOrder() == null ? 0 : c.getSortOrder()
+                ))
+                .collect(java.util.stream.Collectors.toList());
+
+        // 4. 递归求值每个顶层节点
+        List<ConditionTrace> topTraces = new ArrayList<>();
+        for (PolicyCondition root : roots) {
+            topTraces.add(
+                    evaluateConditionNode(
+                            root, conditions, byId, context
+                    )
+            );
+        }
+        return topTraces;
+    }
+
+    /**
+     * 递归求值单个条件节点（逻辑分组节点或叶子比较条件）。
+     *
+     * @param node    当前节点
+     * @param all     该策略的全部条件（用于查子节点）
+     * @param byId    条件 id → 条件 索引
+     * @param context 评估上下文
+     * @return 当前节点的评估轨迹（叶子为比较轨迹，分组为组合轨迹）
+     */
+    private ConditionTrace evaluateConditionNode(
+            PolicyCondition node,
+            List<PolicyCondition> all,
+            Map<Long, PolicyCondition> byId,
+            EvaluationContext context
+    ) {
+
+        String logicalOp = node.getLogicalOperator();
+
+        // 1. 逻辑分组节点：按逻辑运算符组合其子节点结果
+        if (StringUtils.hasText(logicalOp)) {
+
+            List<ConditionTrace> children = all.stream()
+                    .filter(c -> Objects.equals(c.getParentId(), node.getId()))
+                    .sorted(Comparator.comparing(
+                            c -> c.getSortOrder() == null ? 0 : c.getSortOrder()
+                    ))
+                    .map(c -> evaluateConditionNode(c, all, byId, context))
+                    .collect(java.util.stream.Collectors.toList());
+
+            boolean combined;
+            if (children.isEmpty()) {
+                // 空分组视为不匹配（避免空 OR 被误判为命中）
+                combined = false;
+            } else if ("OR".equalsIgnoreCase(logicalOp)) {
+                combined = children.stream().anyMatch(ConditionTrace::isMatched);
+            } else {
+                combined = children.stream().allMatch(ConditionTrace::isMatched);
+            }
+
+            return ConditionTrace.builder()
+                    .logicalOperator(logicalOp.toUpperCase())
+                    .children(children)
+                    .matched(combined)
+                    .build();
+        }
+
+        // 2. 叶子比较条件：复用单条件求值
+        return evaluateWithTrace(node, context);
     }
 
     /**

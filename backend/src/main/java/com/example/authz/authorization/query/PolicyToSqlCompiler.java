@@ -5,13 +5,16 @@ import com.example.authz.authorization.policy.EvaluationContext;
 import com.example.authz.authorization.policy.PolicyService;
 import com.example.authz.authorization.policy.entity.Policy;
 import com.example.authz.authorization.policy.entity.PolicyCondition;
-import com.example.authz.authorization.rebac.RelationGraphResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -20,25 +23,24 @@ import java.util.Set;
  * 将当前用户能够匹配的所有 <b>ALLOW</b> 策略，编译为一段可直接下推给
  * ORM / 数据库的 SQL WHERE 片段，实现查询阶段的数据行级过滤。
  * <p>
- * 合并规则：Policy 之间用 OR、Policy 内多个 Condition 之间用 AND。
+ * 合并规则：Policy 之间用 OR；Policy 内条件按 AST 逻辑树组合
+ * （支持 {@code (A AND B) OR C} 的嵌套分组），顶层节点之间用 AND。
  * <p>
- * 支持三种条件下推：
+ * 支持两种条件下推：
  * <ul>
- *   <li>ReBAC 关系：HAS_RELATION → 由关系图反向推导出可访问的 id 集合 → {@code id IN (...)}</li>
+ *   <li>ReBAC 关系：HAS_RELATION → 生成关联 EXISTS 子查询（避免大表 IN 列表）</li>
  *   <li>ABAC 属性相等：SUBJECT.attr == RESOURCE.attr → {@code <column> = '<值>'}</li>
- *   <li>主体等于资源属主：SUBJECT.id == RESOURCE.ownerId → {@code owner_id = <值>}</li>
  * </ul>
  *
  * @author Nickel
- * @since 2026-08-28
+ * @since 2026-08-29
  */
 @Component
 @RequiredArgsConstructor
 public class PolicyToSqlCompiler {
 
+    /** 策略服务：加载策略及其条件 */
     private final PolicyService policyService;
-
-    private final RelationGraphResolver relationGraphResolver;
 
     /**
      * 资源属性路径与数据库真实列名的映射字典（列元数据映射）。
@@ -90,21 +92,49 @@ public class PolicyToSqlCompiler {
             List<PolicyCondition> conditions =
                     policyService.findConditions(policy.getId());
 
-            // 同一 Policy 内多个 Condition 用 AND 合并
+            // 同一 Policy 内条件按 AST 逻辑树组合（顶层节点用 AND 合并）
             List<String> conditionSqlClauses = new ArrayList<>();
-
             boolean policyCanBeEvaluated = true;
 
-            for (PolicyCondition cond : conditions) {
+            // 判断是否启用 AST 分组
+            boolean hasGroup = conditions.stream()
+                    .anyMatch(c -> StringUtils.hasText(c.getLogicalOperator()));
 
-                String clause = compileCondition(cond, resource, context);
-
-                // 遇到无法编译的条件（如不支持的运算符），整条策略放弃下推
-                if (clause == null) {
-                    policyCanBeEvaluated = false;
-                    break;
+            if (!hasGroup) {
+                // 扁平 AND（向后兼容）：逐条件编译，任一无法下推则放弃整条策略
+                for (PolicyCondition cond : conditions) {
+                    String clause = compileCondition(cond, resource, context);
+                    if (clause == null) {
+                        policyCanBeEvaluated = false;
+                        break;
+                    }
+                    conditionSqlClauses.add(clause);
                 }
-                conditionSqlClauses.add(clause);
+            } else {
+                // AST 分组：先识别顶层节点，再逐根递归编译
+                Map<Long, PolicyCondition> byId = new HashMap<>();
+                for (PolicyCondition c : conditions) {
+                    if (c.getId() != null) {
+                        byId.put(c.getId(), c);
+                    }
+                }
+                List<PolicyCondition> roots = conditions.stream()
+                        .filter(c -> c.getParentId() == null
+                                || !byId.containsKey(c.getParentId()))
+                        .sorted(Comparator.comparing(
+                                c -> c.getSortOrder() == null ? 0 : c.getSortOrder()
+                        ))
+                        .collect(java.util.stream.Collectors.toList());
+
+                for (PolicyCondition root : roots) {
+                    String clause = compileConditionNode(root, conditions, byId, resource, context);
+                    // 分组内存在无法下推的子条件时，整条策略放弃下推
+                    if (clause == null) {
+                        policyCanBeEvaluated = false;
+                        break;
+                    }
+                    conditionSqlClauses.add(clause);
+                }
             }
 
             // 策略全部条件均可编译且至少有一个条件，才作为一个 OR 分支
@@ -141,34 +171,30 @@ public class PolicyToSqlCompiler {
         String operator = cond.getOperator();
 
         // 1. ReBAC 关系下推：SUBJECT.id HAS_RELATION 'collaborator'
+        //    采用关联 EXISTS 子查询，取代“内存中反向推导全部资源 id → id IN (…)”
+        //    的大列表下推，避免海量资源场景下 SQL 过长、索引失效。
         if ("HAS_RELATION".equalsIgnoreCase(operator)) {
 
-            // 取当前主体 ID，作为关系图反向查询的入参
-            Object userId = AttributeResolver.resolve(
+            // 取当前主体 ID（如 user 的 id），作为关系子查询的关联入参
+            Object subjectIdValue = AttributeResolver.resolve(
                     context,
                     cond.getAttributeSource(),
                     cond.getAttributePath()
             );
-            if (userId == null) {
+            if (subjectIdValue == null) {
                 return "1 = 0";
             }
 
             String targetRelation = cond.getValue();
-
-            // 一次图遍历计算出用户可访问的资源 ID 集合
-            List<String> ids =
-                    relationGraphResolver.findAccessibleResourceIds(
-                            resource,
-                            targetRelation,
-                            "user",
-                            String.valueOf(userId)
-                    );
-
-            // 无任何可访问资源：用恒假占位，OR 合并时自动忽略
-            if (ids.isEmpty()) {
-                return "1 = 0";
+            if (!StringUtils.hasText(targetRelation)) {
+                return null;
             }
-            return "id IN (" + String.join(", ", ids) + ")";
+
+            return buildRelationExistsSql(
+                    resource,
+                    targetRelation,
+                    String.valueOf(subjectIdValue)
+            );
         }
 
         // 2. ABAC 属性比较下推：SUBJECT.attr == RESOURCE.attr
@@ -209,6 +235,113 @@ public class PolicyToSqlCompiler {
 
         // 其余运算符/取值方式暂不支持 SQL 下推
         return null;
+    }
+
+    /**
+     * 递归编译单个条件节点为 SQL 片段（支持 AST 分组）。
+     *
+     * @param node    当前节点（逻辑分组节点或叶子比较条件）
+     * @param all     该策略的全部条件（用于查子节点）
+     * @param byId    条件 id → 条件 索引
+     * @param resource 资源类型
+     * @param context 评估上下文
+     * @return SQL 片段（子条件存在无法下推时返回 null）
+     */
+    private String compileConditionNode(
+            PolicyCondition node,
+            List<PolicyCondition> all,
+            Map<Long, PolicyCondition> byId,
+            String resource,
+            EvaluationContext context
+    ) {
+
+        // 1. 逻辑分组节点：递归编译子节点并用 AND/OR 组合
+        if (StringUtils.hasText(node.getLogicalOperator())) {
+
+            List<String> childClauses = all.stream()
+                    .filter(c -> Objects.equals(c.getParentId(), node.getId()))
+                    .sorted(Comparator.comparing(
+                            c -> c.getSortOrder() == null ? 0 : c.getSortOrder()
+                    ))
+                    .map(c -> compileConditionNode(c, all, byId, resource, context))
+                    .collect(java.util.stream.Collectors.toList());
+
+            // 存在无法下推的子条件，或空分组：整条分组无法下推
+            if (childClauses.isEmpty()
+                    || childClauses.contains(null)) {
+                return null;
+            }
+
+            // 单子节点时无需括号，直接返回该子片段即可
+            if (childClauses.size() == 1) {
+                return childClauses.get(0);
+            }
+
+            // 多子节点：按逻辑运算符组合，并以括号包裹保证外层运算优先级
+            String joiner = "OR".equalsIgnoreCase(node.getLogicalOperator())
+                    ? " OR "
+                    : " AND ";
+            return "(" + String.join(joiner, childClauses) + ")";
+        }
+
+        // 2. 叶子比较条件：复用单条件编译
+        return compileCondition(node, resource, context);
+    }
+
+    /**
+     * 生成 HAS_RELATION 条件的关联 EXISTS 子查询。
+     * <p>
+     * 与主表按资源主键（{@code <resource>.id}）关联，判断该资源上是否存在
+     * 主体（当前用户）具备目标关系的元组。相比在内存中反推全部可访问
+     * 资源 id 并拼 {@code id IN (1,2,…,10000)}，EXISTS 将过滤下推到数据库，
+     * 大大减小下推子句体积、便于索引命中。
+     * <p>
+     * 覆盖两类命中（与关系图模型一致）：
+     * <ul>
+     *   <li>直接授权：{@code project:3#collaborator@user:1}（subject_relation 为空）</li>
+     *   <li>团队 Userset 继承：{@code project:3#collaborator@team:1#member}
+     *       且用户是该团队 member（一层嵌套）</li>
+     * </ul>
+     * 若业务可能存在更深层多跳嵌套，需改为递归 CTE；当前模型仅一层即可。
+     *
+     * @param resource       资源类型（同时是主表名，如 project / report）
+     * @param relation       目标关系名，如 collaborator
+     * @param userId         当前主体用户 ID
+     * @return EXISTS 相关子查询 SQL 片段
+     */
+    private String buildRelationExistsSql(
+            String resource,
+            String relation,
+            String userId
+    ) {
+
+        // 转义防注入（关系名、用户 ID 均来自前后端输入）
+        String rel = escapeSql(relation);
+        String uid = escapeSql(userId);
+        // 常量：团队主体类型与成员嵌套关系（与本项目 ReBAC 模型一致）
+        final String teamType = "team";
+        final String memberRel = "member";
+
+        return "EXISTS (SELECT 1 FROM auth_relation_tuple t "
+                + "WHERE t.resource_type = '" + resource + "' "
+                // 主表资源主键（project.id / report.id）与元组资源 ID 关联
+                + "AND t.resource_id = CAST(" + resource + ".id AS VARCHAR) "
+                + "AND t.relation = '" + rel + "' "
+                + "AND ( "
+                // 直接授权：主语即该用户
+                + "(t.subject_type = 'user' AND t.subject_id = '" + uid + "' "
+                + "AND t.subject_relation IS NULL) "
+                + "OR "
+                // 团队 Userset：主语的团队是 member，且该团队确实包含该用户
+                + "(t.subject_type = '" + teamType + "' "
+                + "AND t.subject_relation = '" + memberRel + "' "
+                + "AND EXISTS (SELECT 1 FROM auth_relation_tuple tm "
+                + "WHERE tm.resource_type = '" + teamType + "' "
+                + "AND tm.resource_id = t.subject_id "
+                + "AND tm.relation = '" + memberRel + "' "
+                + "AND tm.subject_type = 'user' AND tm.subject_id = '" + uid + "' "
+                + "AND tm.subject_relation IS NULL)) "
+                + "))";
     }
 
     /**

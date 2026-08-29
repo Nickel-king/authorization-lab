@@ -63,26 +63,16 @@ public class PolicyEvaluator {
                             policy.getId()
                     );
 
+            // 使用 AST 逻辑树递归求值，得到顶层轨迹并计算组合后的整体匹配
             List<ConditionTrace> conditionTraces =
-                    new ArrayList<>();
+                    conditionEvaluator.evaluateConditionTree(
+                            conditions,
+                            context
+                    );
 
-            boolean allMatched = true;
-
-            for (PolicyCondition condition
-                    : conditions) {
-
-                ConditionTrace cTrace =
-                        conditionEvaluator.evaluateWithTrace(
-                                condition,
-                                context
-                        );
-
-                conditionTraces.add(cTrace);
-
-                if (!cTrace.isMatched()) {
-                    allMatched = false;
-                }
-            }
+            // 策略整体匹配 = 全部顶层节点（扁平列表或分组根节点）均命中
+            boolean allMatched = conditionTraces.stream()
+                    .allMatch(ConditionTrace::isMatched);
 
             PolicyTrace pTrace = PolicyTrace.builder()
                     .policyCode(policy.getCode())

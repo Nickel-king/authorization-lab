@@ -45,4 +45,21 @@ public class PolicyCondition {
 
     /** 条件在同策略内的排序序号，数字越小越先求值 */
     private Integer sortOrder;
+
+    /**
+     * 父节点条件 ID（AST 逻辑树用）。
+     * <p>
+     * 指向其所属逻辑分组节点：{@link #parentId} 为空表示该条件是顶层节点，
+     * 顶层节点之间按 AND 组合；非空表示它挂在某个逻辑分组节点下
+     * （该分组的 {@link #logicalOperator} 决定其组合方式）。
+     */
+    private Long parentId;
+
+    /**
+     * 逻辑运算符（AST 逻辑树用，值：AND / OR）。
+     * <p>
+     * 仅"逻辑分组节点"使用（该行不承担比较语义）；叶子比较条件此值应为空。
+     * 当某策略所有条件的该字段均为空时，退化为传统扁平 AND 列表（向后兼容）。
+     */
+    private String logicalOperator;
 }
