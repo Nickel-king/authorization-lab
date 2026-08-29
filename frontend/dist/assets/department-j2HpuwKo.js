@@ -1,0 +1,1 @@
+import{h as e}from"./http-BJtO7mjT.js";const p=()=>e.get("/departments"),n=t=>e.post("/departments",t),r=(t,a)=>e.put(`/departments/${t}`,a),m=t=>e.delete(`/departments/${t}`);export{n as c,m as d,p as f,r as u};

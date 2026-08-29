@@ -1,0 +1,1 @@
+import{h as e}from"./http-BJtO7mjT.js";const t=()=>e.get("/rbac/roles"),a=s=>e.post("/rbac/roles",s),c=s=>e.get(`/rbac/roles/${s}`),l=(s,o)=>e.put(`/rbac/roles/${s}/permissions`,o),i=(s,o)=>e.put(`/rbac/roles/${s}/users`,o),n=()=>e.get("/rbac/permissions/tree");export{n as a,c as b,i as c,a as d,t as f,l as s};
