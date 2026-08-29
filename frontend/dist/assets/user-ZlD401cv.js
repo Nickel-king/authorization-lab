@@ -1,1 +1,0 @@
-import{h as e}from"./http-BJtO7mjT.js";const o=s=>e.get("/users",{params:s}),c=s=>e.get(`/users/${s}/roles`),a=s=>e.post("/users",s),p=(s,t)=>e.put(`/users/${s}`,t),u=(s,t)=>e.put(`/users/${s}/roles`,t),n=s=>e.get("/projects",{params:s}),f=s=>e.post("/projects",s);export{c as a,n as b,a as c,f as d,o as f,u as s,p as u};
