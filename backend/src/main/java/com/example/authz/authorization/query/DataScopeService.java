@@ -28,9 +28,9 @@ public class DataScopeService {
      * @param userId   当前用户 ID
      * @param resource 资源类型，如 project
      * @param action   操作，如 update
-     * @return 编译后的 SQL WHERE 条件片段
+     * @return 编译后的 SQL 过滤条件（含参数绑定与可读预览）
      */
-    public String getSqlFilter(
+    public SqlFilterResult getSqlFilter(
             Long userId,
             String resource,
             String action
@@ -40,7 +40,7 @@ public class DataScopeService {
         EvaluationContext context =
                 contextBuilder.build(userId, resource, null);
 
-        // 将主体可匹配的 ALLOW 策略编译为 SQL 下推条件
+        // 将主体可匹配的 ALLOW 策略编译为 SQL 下推条件（参数化绑定）
         return policyToSqlCompiler.compileToSqlWhereClause(
                 resource,
                 action,

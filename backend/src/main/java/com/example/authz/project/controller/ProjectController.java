@@ -5,6 +5,7 @@ import com.example.authz.authorization.AuthorizationDecision;
 import com.example.authz.authorization.AuthorizationRequest;
 import com.example.authz.authorization.AuthorizationService;
 import com.example.authz.authorization.query.DataScopeService;
+import com.example.authz.authorization.query.SqlFilterResult;
 import com.example.authz.common.ApiResponse;
 import com.example.authz.project.entity.Project;
 import com.example.authz.project.service.ProjectService;
@@ -57,18 +58,24 @@ public class ProjectController {
         Long userId = currentUserId != null ? currentUserId : 1L;
 
         // 1. 由授权策略生成当前用户的数据权限 SQL 条件（此处以 update 操作为例）
-        String sqlFilter = dataScopeService.getSqlFilter(
+        SqlFilterResult filter = dataScopeService.getSqlFilter(
                 userId, "project", "update");
 
-        // 2. 将生成的 SQL 条件注入 ORM 查询构造器，由数据库底层过滤与分页
+        // 2. 将生成的 SQL 条件（参数化）注入 ORM 查询构造器，由数据库底层过滤与分页
         QueryWrapper<Project> wrapper = new QueryWrapper<>();
-        wrapper.apply(sqlFilter);
+        if (filter.params().isEmpty()) {
+            // 无可绑定参数时，仅追加 SQL 片段（仅字面量条件场景）
+            wrapper.apply(filter.sql());
+        } else {
+            // 有绑定参数时，走参数化绑定执行，防 SQL 注入
+            wrapper.apply(filter.sql(), filter.params().toArray());
+        }
 
         List<Project> list = projectService.list(wrapper);
 
         Map<String, Object> result = Map.of(
                 "userId", userId,
-                "appliedSqlFilter", sqlFilter,
+                "appliedSqlFilter", filter.displaySql(),
                 "count", list.size(),
                 "data", list
         );

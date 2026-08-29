@@ -265,7 +265,12 @@ const onDelete = async (p) => {
           <label class="mb-2 block text-xs font-medium text-slate-600">
             条件组（AND 连接）
           </label>
-          <VisualRuleBuilder v-model="form.conditions" />
+          <VisualRuleBuilder
+            v-model="form.conditions"
+            :resource="form.resource"
+            :action="form.action"
+            :effect="form.effect"
+          />
         </div>
       </div>
 

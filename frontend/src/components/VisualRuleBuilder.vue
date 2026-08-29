@@ -3,11 +3,18 @@
 // 通过 v-model 与父组件双向绑定条件数组，行间以 AND 徽章连接
 // 布局采用上下两行：第一行（左来源/路径/算子/右值类型 + 切换按钮 + 删除）
 // 第二行（右值输入区，宽度自适应），避免控件被挤压竖排
+import { computed } from 'vue'
 import { Plus, Trash2, Type, Link2 } from 'lucide-vue-next'
 
 const props = defineProps({
   // 条件数组：{attributeSource, attributePath, operator, valueSource, value}
-  modelValue: { type: Array, default: () => [] }
+  modelValue: { type: Array, default: () => [] },
+  // 目标资源类型（如 project / report），用于策略释义回显
+  resource: { type: String, default: '' },
+  // 目标操作（如 update / read），用于策略释义回显
+  action: { type: String, default: '' },
+  // 允许效果（ALLOW / DENY），用于策略释义回显
+  effect: { type: String, default: 'ALLOW' }
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -48,6 +55,106 @@ const RESOURCE_ATTR_OPTIONS = [
   'resource.security_level'
 ]
 
+// ---------------- 策略自然语言释义字典（避免魔法值） ----------------
+
+/** 资源类型 → 中文释义 */
+const RESOURCE_LABELS = { project: '科研项目', report: '报表' }
+/** 操作 → 中文释义 */
+const ACTION_LABELS = {
+  read: '查看', create: '创建', update: '修改', delete: '删除'
+}
+/** 属性来源 → 中文主语（SUBJECT 操作人 / RESOURCE 当前资源 / CONTEXT 环境） */
+const SOURCE_LABELS = {
+  SUBJECT: '操作人', RESOURCE: '当前资源', CONTEXT: '环境'
+}
+/** 算子 → 中文释义 */
+const OPERATOR_LABELS = {
+  EQUALS: '等于',
+  NOT_EQUALS: '不等于',
+  CONTAINS: '包含',
+  IN: '属于',
+  HAS_RELATION: '具备关系'
+}
+
+/**
+ * 翻译属性引用右值（如 resource.department → 当前资源的 department）。
+ * @param {string} value 属性引用路径
+ * @returns {string} 翻译后的可读描述
+ */
+const translateRef = (value) => {
+  if (!value) return '『未选择属性』'
+  // 前缀 → 中文主语映射（仅作演示所需常见前缀）
+  const prefixMap = {
+    subject: '操作人的', resource: '当前资源的', context: '环境的'
+  }
+  // 命中前缀则拆出剩余字段，拼接成"主语 + 字段"可读描述
+  for (const [k, zh] of Object.entries(prefixMap)) {
+    if (value.startsWith(`${k}.`)) {
+      return `${zh} ${value.slice(k.length + 1)}`
+    }
+  }
+  // 无法识别前缀时原样返回，避免丢信息
+  return value
+}
+
+/**
+ * 翻译单条条件为可读的自然语言。
+ * @param {object} row 条件行 {attributeSource, attributePath, operator, valueSource, value}
+ * @returns {string} 单条条件的中文释义
+ */
+const translateCondition = (row) => {
+  // 来源主语（操作人 / 当前资源 / 环境）
+  const src = SOURCE_LABELS[row.attributeSource] || row.attributeSource
+  // 算子中文释义
+  const op = OPERATOR_LABELS[row.operator] || row.operator
+
+  // 语义特例：HAS_RELATION 只关心"主语 具备关系 '值'"，无需拼接左值属性路径
+  if (row.operator === 'HAS_RELATION') {
+    const v = row.value ? `'${row.value}'` : '『未填写』'
+    return `${src} ${op} ${v}`
+  }
+
+  // 左值：主语 + 属性路径（如 "操作人的 department"）
+  const left = `${src}的 ${row.attributePath || '『未选择属性』'}`
+  // 右值：属性引用走翻译，字面量带单引号包裹
+  let right
+  if (row.valueSource === 'ATTRIBUTE') {
+    right = translateRef(row.value)
+  } else {
+    right = row.value ? `'${row.value}'` : '『未填写』'
+  }
+  return `${left} ${op} ${right}`
+}
+
+/**
+ * 策略自然语言释义（computed，随条件/资源/操作/效果实时联动）。
+ * <p>结构："当 [条件组翻译] 时，针对资源【Resource】的【Action】操作将被【Effect】。"</p>
+ */
+const policySummaryText = computed(() => {
+  // 资源 / 操作 / 效果的中文回显
+  const resourceLabel = RESOURCE_LABELS[props.resource] || props.resource
+  const actionLabel = ACTION_LABELS[props.action] || props.action
+  const effectText = props.effect === 'DENY' ? '拒绝 (DENY)' : '允许 (ALLOW)'
+
+  // 无任何条件时输出简化释义（仍保留资源/操作/效果骨架）
+  if (!props.modelValue.length) {
+    return (
+      `针对资源【${resourceLabel}】的【${actionLabel}】操作将被【${effectText}】` +
+      '（尚未配置条件，即对所有访问执行该效果）'
+    )
+  }
+
+  // 条件间以 AND 连接
+  const condText = props.modelValue
+    .map(translateCondition)
+    .filter(Boolean)
+    .join(' 并且 (AND) ')
+  return (
+    `当 ${condText} 时，针对资源【${resourceLabel}】的【${actionLabel}】` +
+    `操作将被【${effectText}】。`
+  )
+})
+
 // 新建一行空条件
 const addRow = () => {
   const rows = [...props.modelValue]
@@ -82,6 +189,19 @@ const switchValueType = (row, target) => {
 
 <template>
   <div class="space-y-2">
+    <!-- 策略自然语言释义（实时动态，随条件/资源/操作/效果联动） -->
+    <el-alert
+      type="info"
+      :closable="false"
+      show-icon
+      class="border-slate-200 text-xs"
+    >
+      <template #title>
+        <span class="text-xs font-semibold text-slate-600">💡 策略释义</span>
+      </template>
+      <span class="text-sm leading-relaxed text-slate-700">{{ policySummaryText }}</span>
+    </el-alert>
+
     <!-- 逐行渲染条件编辑 -->
     <div
       v-for="(row, index) in modelValue"

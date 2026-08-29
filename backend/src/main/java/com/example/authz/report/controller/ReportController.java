@@ -2,6 +2,7 @@ package com.example.authz.report.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.authz.authorization.query.DataScopeService;
+import com.example.authz.authorization.query.SqlFilterResult;
 import com.example.authz.common.ApiResponse;
 import com.example.authz.report.entity.Report;
 import com.example.authz.report.service.ReportService;
@@ -50,18 +51,24 @@ public class ReportController {
         Long userId = currentUserId != null ? currentUserId : 1L;
 
         // 1. 由授权策略生成当前用户对报表查看（view）的数据权限 SQL 条件
-        String sqlFilter = dataScopeService.getSqlFilter(
+        SqlFilterResult filter = dataScopeService.getSqlFilter(
                 userId, "report", "view");
 
-        // 2. 将生成的 SQL 条件注入 ORM 查询构造器，由数据库底层过滤
+        // 2. 将生成的 SQL 条件（参数化）注入 ORM 查询构造器，由数据库底层过滤
         QueryWrapper<Report> wrapper = new QueryWrapper<>();
-        wrapper.apply(sqlFilter);
+        if (filter.params().isEmpty()) {
+            // 无可绑定参数时，仅追加 SQL 片段（仅字面量条件场景）
+            wrapper.apply(filter.sql());
+        } else {
+            // 有绑定参数时，走参数化绑定执行，防 SQL 注入
+            wrapper.apply(filter.sql(), filter.params().toArray());
+        }
 
         List<Report> list = reportService.list(wrapper);
 
         Map<String, Object> result = Map.of(
                 "userId", userId,
-                "appliedSqlFilter", sqlFilter,
+                "appliedSqlFilter", filter.displaySql(),
                 "count", list.size(),
                 "data", list
         );

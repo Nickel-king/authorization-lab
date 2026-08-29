@@ -76,9 +76,10 @@ public class SimulatorController {
         if (listMode) {
             response.setSqlPreview(
                     dataScopeService.getSqlFilter(
-                            request.getUserId(),
-                            request.getResource(),
-                            request.getAction()));
+                                    request.getUserId(),
+                                    request.getResource(),
+                                    request.getAction())
+                            .displaySql());
         } else {
             response.setSqlPreview(null);
         }

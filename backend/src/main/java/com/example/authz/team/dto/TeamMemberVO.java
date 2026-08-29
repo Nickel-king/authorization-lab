@@ -31,6 +31,9 @@ public class TeamMemberVO {
     /** 团队角色：member 成员 / leader 组长 */
     private String teamRole;
 
+    /** 是否组长：由是否持有 leader 补充元组推导而来（Dual-Tuple 模式） */
+    private Boolean isLeader;
+
     /** 加入时间 */
     private LocalDateTime createdAt;
 }

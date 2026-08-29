@@ -24,6 +24,13 @@ public interface TeamService extends IService<Team> {
     String RELATION_MEMBER = "member";
 
     /**
+     * 组长关系名常量：团队对用户的组长关系（Dual-Tuple 模式中标识管理员的补充元组）。
+     * <p>
+     * 组长同时持有 member 元组与 leader 元组，避免破坏 ReBAC 继承。
+     */
+    String RELATION_LEADER = "leader";
+
+    /**
      * 查询团队列表（含关联部门名称与成员数量）。
      *
      * @return 团队视图对象列表，已按创建时间倒序

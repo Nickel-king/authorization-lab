@@ -14,7 +14,7 @@ import {
   deleteTuple,
   fetchPath
 } from '@/api/relation'
-import { fetchProjects } from '@/api/user'
+import { fetchProjects, fetchUsers } from '@/api/user'
 import { fetchReports } from '@/api/report'
 import { fetchTeams } from '@/api/team'
 
