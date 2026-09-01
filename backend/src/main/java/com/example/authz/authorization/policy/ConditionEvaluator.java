@@ -98,18 +98,12 @@ public class ConditionEvaluator {
             }
 
             case null, default -> {
-                left = AttributeResolver.resolve(
-                        context,
-                        condition.getAttributeSource(),
-                        condition.getAttributePath()
-                );
-
-                right = resolveRightValue(
-                        condition,
-                        context
-                );
-
-                matched = compare(left, right, operator);
+                // ABAC 属性比较路径：左右操作数均来自评估上下文的
+                // 主体/资源属性，不查询 auth_relation_tuple（与 HAS_RELATION 本质区别）
+                AttributeComparison cmp = compareAttribute(condition, context, operator);
+                left = cmp.left;
+                right = cmp.right;
+                matched = cmp.matched;
             }
         }
 
@@ -249,6 +243,63 @@ public class ConditionEvaluator {
 
         // 2. 叶子比较条件：复用单条件求值
         return evaluateWithTrace(node, context);
+    }
+
+    /**
+     * ABAC 属性比较（默认路径）：对单个策略条件执行基于属性值的比较。
+     * <p>
+     * 左右操作数均来自评估上下文的业务实体字段：
+     * 左值为来源（如 {@code SUBJECT.id}）属性，右值经
+     * {@link #resolveRightValue} 解析——当 RHS 为属性引用时，
+     * 例如 {@code RESOURCE.creator_id} / {@code RESOURCE.owner_id}，
+     * 直接读取 {@code EvaluationContext.resource} 中业务实体暴露的字段，
+     * <b>不查询 auth_relation_tuple</b>。这使“创建者/属主”这类隐式关系
+     * 得以通过纯 ABAC 属性比较表达，摆脱对元组表的手工预置依赖。
+     *
+     * @param condition 策略条件
+     * @param context   评估上下文
+     * @param operator  比较运算符
+     * @return 携带左右操作数实际值与比较结果的比较结果
+     */
+    private AttributeComparison compareAttribute(
+            PolicyCondition condition,
+            EvaluationContext context,
+            String operator
+    ) {
+
+        Object left = AttributeResolver.resolve(
+                context,
+                condition.getAttributeSource(),
+                condition.getAttributePath()
+        );
+
+        Object right = resolveRightValue(condition, context);
+
+        return new AttributeComparison(
+                left,
+                right,
+                compare(left, right, operator)
+        );
+    }
+
+    /**
+     * ABAC 属性比较结果（携带左右操作数实际值，供评估轨迹展示）。
+     */
+    private static final class AttributeComparison {
+
+        private final Object left;
+        private final Object right;
+        private final boolean matched;
+
+        private AttributeComparison(
+                Object left,
+                Object right,
+                boolean matched
+        ) {
+            this.left = left;
+            this.right = right;
+            this.matched = matched;
+        }
     }
 
     /**

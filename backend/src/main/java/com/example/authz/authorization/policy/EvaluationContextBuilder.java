@@ -117,6 +117,16 @@ public class EvaluationContextBuilder {
                     "ownerId",
                     project.getOwnerId()
             );
+
+            // 隐式关系（创建者/属主）语义键：不落元组表，供 ABAC 直接比较
+            resourceAttributes.put(
+                    "creator_id",
+                    project.getOwnerId()
+            );
+            resourceAttributes.put(
+                    "department_id",
+                    project.getDepartment()
+            );
         }
 
         // 报表资源属性加载：如 report.department / report.security_level
@@ -161,6 +171,16 @@ public class EvaluationContextBuilder {
             resourceAttributes.put(
                     "securityLevel",
                     report.getSecurityLevel()
+            );
+
+            // 隐式关系（创建者/归属部门）语义键：不落元组表，供 ABAC 直接比较
+            resourceAttributes.put(
+                    "creator_id",
+                    report.getCreatedBy()
+            );
+            resourceAttributes.put(
+                    "department_id",
+                    report.getDepartment()
             );
         }
 

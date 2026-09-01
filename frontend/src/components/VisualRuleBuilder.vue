@@ -48,11 +48,14 @@ const PATH_OPTIONS = {
   CONTEXT: ['ip', 'time', 'device']
 }
 
-// 资源属性引用下拉候选
+// 资源属性引用下拉候选（RHS 属性引用）
+// 提供常见业务字段，便于快速配置如 “SUBJECT.id EQUALS RESOURCE.creator_id” 的规则
 const RESOURCE_ATTR_OPTIONS = [
-  'resource.department',
-  'resource.owner_id',
-  'resource.security_level'
+  { label: '创建人 (RESOURCE.creator_id)', value: 'resource.creator_id' },
+  { label: '归属部门 (RESOURCE.department_id)', value: 'resource.department_id' },
+  { label: '所属部门 (RESOURCE.department)', value: 'resource.department' },
+  { label: '属主 (RESOURCE.owner_id)', value: 'resource.owner_id' },
+  { label: '安全密级 (RESOURCE.security_level)', value: 'resource.security_level' }
 ]
 
 // ---------------- 策略自然语言释义字典（避免魔法值） ----------------
@@ -292,8 +295,8 @@ const switchValueType = (row, target) => {
           @change="onFieldChange"
         >
           <option value="" disabled>请选择资源属性引用</option>
-          <option v-for="opt in RESOURCE_ATTR_OPTIONS" :key="opt" :value="opt">
-            {{ opt }}
+          <option v-for="opt in RESOURCE_ATTR_OPTIONS" :key="opt.value" :value="opt.value">
+            {{ opt.label }}
           </option>
         </select>
       </div>
