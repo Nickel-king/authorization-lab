@@ -18,5 +18,11 @@ export const saveUserRoles = (userId, roleIds) => http.put(`/users/${userId}/rol
 
 export const fetchProjects = (params) => http.get('/projects', { params })
 
+// 单个项目详情
+export const fetchProject = (id) => http.get(`/projects/${id}`)
+
 // 新增项目（name / department / ownerId / description）
 export const createProject = (payload) => http.post('/projects', payload)
+
+// 更新项目
+export const updateProject = (id, payload) => http.put(`/projects/${id}`, payload)

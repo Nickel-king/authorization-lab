@@ -2,15 +2,15 @@
 // 科研项目管理工作台（/workspace/projects）
 // 顶部身份切换 + SQL 过滤看板 + 项目表格（编辑按钮按 PDP 动态控制）
 // 协作授权统一走通用 ReBAC 抽屉（ResourceAccessDrawer），不感知具体协作端点
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Eye, Pencil, Users2, Plus } from 'lucide-vue-next'
 import SqlPreview from '@/components/SqlPreview.vue'
 import ResourceAccessDrawer from '@/components/ResourceAccessDrawer.vue'
-import { fetchProjects, createProject, fetchUsers } from '@/api/user'
+import { fetchProjects, createProject, fetchUsers, fetchProject, updateProject } from '@/api/user'
 import { checkAuthorization } from '@/api/authorization'
 
-// 候选模拟身份
+// 候选模拟身份（同时作为"负责人"下拉候选）
 const identities = ref([])
 const currentUserId = ref(1)
 
@@ -25,12 +25,26 @@ const perms = ref(new Map())
 const accessVisible = ref(false)
 const accessProject = ref(null)
 
-// 新建项目弹窗
-const createVisible = ref(false)
-const createForm = ref({ name: '', department: 'computer', ownerId: 1, description: '' })
+// -------- 弹窗：新建 / 编辑 --------
+/** 当前是否为编辑模式（null = 新增，数字 = 编辑中的项目 ID） */
+const editingProjectId = ref(null)
+const formVisible = ref(false)
+const formLoading = ref(false)
+const formData = ref({ name: '', department: 'computer', ownerId: 1, description: '' })
+
+/** 查看详情弹窗（只读） */
+const detailVisible = ref(false)
+const detailProject = ref(null)
 
 // 部门展示映射
 const deptLabel = (k) => (k === 'finance' ? '财务处' : '计算机学院')
+
+/** 根据 ownerId 查负责人展示名 */
+const ownerName = (id) => {
+  if (id == null) return '-'
+  const u = identities.value.find((u) => Number(u.id) === Number(id))
+  return u ? `${u.displayName} · ${deptLabel(u.department)}` : `#${id}`
+}
 
 // ---- 初始化 ----
 onMounted(async () => {
@@ -82,19 +96,58 @@ const onAccessChanged = async () => {
 
 // 打开新建项目弹窗
 const openCreate = () => {
-  createForm.value = { name: '', department: 'computer', ownerId: currentUserId.value, description: '' }
-  createVisible.value = true
+  editingProjectId.value = null
+  formData.value = { name: '', department: 'computer', ownerId: currentUserId.value, description: '' }
+  formVisible.value = true
 }
 
-// 提交新建
-const submitCreate = async () => {
-  if (!createForm.value.name.trim()) {
+// 打开编辑项目弹窗（异步拉取详情 → 回填表单）
+const openEdit = async (row) => {
+  editingProjectId.value = row.id
+  formLoading.value = true
+  formVisible.value = true
+  try {
+    const res = await fetchProject(row.id)
+    const p = res.data ?? res
+    formData.value = {
+      name: p.name || '',
+      department: p.department || 'computer',
+      ownerId: p.ownerId ?? currentUserId.value,
+      description: p.description || ''
+    }
+  } catch (e) {
+    ElMessage.error('加载项目详情失败')
+    formVisible.value = false
+  } finally {
+    formLoading.value = false
+  }
+}
+
+// 打开查看详情弹窗（只读）
+const openDetail = async (row) => {
+  try {
+    const res = await fetchProject(row.id)
+    detailProject.value = res.data ?? res
+    detailVisible.value = true
+  } catch (e) {
+    ElMessage.error('加载项目详情失败')
+  }
+}
+
+// 提交新建或编辑
+const submitForm = async () => {
+  if (!formData.value.name.trim()) {
     ElMessage.warning('项目名称不能为空')
     return
   }
-  await createProject(createForm.value)
-  ElMessage.success('项目已创建')
-  createVisible.value = false
+  if (editingProjectId.value) {
+    await updateProject(editingProjectId.value, formData.value)
+    ElMessage.success('项目已更新')
+  } else {
+    await createProject(formData.value)
+    ElMessage.success('项目已创建')
+  }
+  formVisible.value = false
   await loadProjects()
 }
 </script>
@@ -137,13 +190,15 @@ const submitCreate = async () => {
             >{{ deptLabel(row.department) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="ownerId" label="负责人" width="100" />
+        <el-table-column label="负责人" width="180">
+          <template #default="{ row }">{{ ownerName(row.ownerId) }}</template>
+        </el-table-column>
         <el-table-column prop="createdAt" label="创建时间" width="180" />
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" :icon="Eye" text @click="ElMessage.info('打开项目详情…')">查看详情</el-button>
+            <el-button size="small" :icon="Eye" text @click="openDetail(row)">查看详情</el-button>
             <el-tooltip :disabled="!editDisabled(row)" content="无权限修改本项目" placement="top">
-              <el-button size="small" :icon="Pencil" text type="primary" :disabled="editDisabled(row)">编辑</el-button>
+              <el-button size="small" :icon="Pencil" text type="primary" :disabled="editDisabled(row)" @click="openEdit(row)">编辑</el-button>
             </el-tooltip>
             <el-button size="small" :icon="Users2" text type="warning" @click="openAccessDrawer(row)">
               访问授权
@@ -162,28 +217,66 @@ const submitCreate = async () => {
       @changed="onAccessChanged"
     />
 
-    <!-- 新建项目弹窗 -->
-    <el-dialog v-model="createVisible" title="新建项目" width="480px">
-      <el-form label-width="90px">
+    <!-- 新建 / 编辑 项目弹窗 -->
+    <el-dialog
+      v-model="formVisible"
+      :title="editingProjectId ? '编辑项目' : '新建项目'"
+      width="520px"
+      :close-on-click-modal="!formLoading"
+    >
+      <el-form label-width="90px" :disabled="formLoading">
         <el-form-item label="项目名称" required>
-          <el-input v-model="createForm.name" placeholder="如 财务审计系统" />
+          <el-input v-model="formData.name" placeholder="如 财务审计系统" />
         </el-form-item>
         <el-form-item label="所属部门">
-          <el-select v-model="createForm.department" style="width: 100%">
+          <el-select v-model="formData.department" style="width: 100%">
             <el-option label="计算机学院" value="computer" />
             <el-option label="财务处" value="finance" />
           </el-select>
         </el-form-item>
         <el-form-item label="负责人">
-          <el-input-number v-model="createForm.ownerId" :min="1" style="width: 160px" />
+          <el-select v-model="formData.ownerId" filterable clearable style="width: 100%" placeholder="选择负责人">
+            <el-option
+              v-for="u in identities"
+              :key="u.id"
+              :label="`${u.displayName} · ${deptLabel(u.department)}`"
+              :value="u.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="描述">
-          <el-input v-model="createForm.description" type="textarea" :rows="2" placeholder="可选" />
+          <el-input v-model="formData.description" type="textarea" :rows="2" placeholder="可选" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitCreate">确认创建</el-button>
+        <el-button :disabled="formLoading" @click="formVisible = false">取消</el-button>
+        <el-button type="primary" :loading="formLoading" @click="submitForm">
+          {{ editingProjectId ? '保存修改' : '确认创建' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看详情弹窗（只读） -->
+    <el-dialog v-model="detailVisible" title="项目详情" width="520px">
+      <template v-if="detailProject">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="项目 ID">{{ detailProject.id }}</el-descriptions-item>
+          <el-descriptions-item label="项目名称">{{ detailProject.name }}</el-descriptions-item>
+          <el-descriptions-item label="所属部门">
+            <span class="rounded-md px-2 py-0.5 text-xs font-medium"
+                  :class="detailProject.department === 'finance' ? 'bg-orange-50 text-orange-700' : 'bg-blue-50 text-blue-700'">
+              {{ deptLabel(detailProject.department) }}
+            </span>
+          </el-descriptions-item>
+          <el-descriptions-item label="负责人">{{ ownerName(detailProject.ownerId) }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ detailProject.createdAt }}</el-descriptions-item>
+          <el-descriptions-item label="项目描述">
+            <span class="whitespace-pre-wrap">{{ detailProject.description || '（无）' }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+      </template>
+      <template #footer>
+        <el-button @click="detailVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>

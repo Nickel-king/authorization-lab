@@ -1,7 +1,7 @@
 <script setup>
 // 协作图谱与关系元组（/authz/relations）
 // 顶部快捷授权表单 + 元组数据清单 / 交互式拓扑图 双视图
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Plus, Trash2, Search, Map, Table2, Route, Pencil, FolderKanban, UsersRound
@@ -26,7 +26,8 @@ const view = ref('table')
 /** 资源类型字典：与后端 resourceType 对齐 */
 const RESOURCE_TYPES = [
   { value: 'project', label: '科研项目 (project)' },
-  { value: 'report', label: '报表 (report)' }
+  { value: 'report', label: '报表 (report)' },
+  { value: 'team', label: '团队 (team)' }
 ]
 
 /** 关系字典：与后端 relation 字段对齐 */
@@ -62,6 +63,9 @@ const subjectCache = ref({ user: null, team: null })
 /** 下拉 loading 态（避免重复请求 / 显示加载占位） */
 const optionLoading = ref({ resource: false, subject: false })
 
+/** 表单初始化保护标志：openEdit/openCreate 整体赋值期间跳过 watch 清空逻辑 */
+const skipFormWatch = ref(false)
+
 // 新增/编辑元组表单（必须在下方 computeds 与 watch 使用之前声明，避免 TDZ 报错）
 const tupleForm = ref({
   resourceType: 'project',
@@ -85,7 +89,7 @@ const subjectOptions = computed(() => subjectCache.value[tupleForm.value.subject
 watch(
   () => tupleForm.value.resourceType,
   async (newType, oldType) => {
-    if (newType !== oldType) {
+    if (!skipFormWatch.value && newType !== oldType) {
       tupleForm.value.resourceId = ''
     }
     await loadResourceOptions(newType)
@@ -96,7 +100,7 @@ watch(
 watch(
   () => tupleForm.value.subjectType,
   async (newType, oldType) => {
-    if (newType !== oldType) {
+    if (!skipFormWatch.value && newType !== oldType) {
       tupleForm.value.subjectId = ''
     }
     await loadSubjectOptions(newType)
@@ -123,6 +127,12 @@ const loadResourceOptions = async (type) => {
       list = (res.data || res || []).map((r) => ({
         value: String(r.id),
         label: `Report #${r.id}: ${r.name}`
+      }))
+    } else if (type === 'team') {
+      const res = await fetchTeams()
+      list = (res.data || res || []).map((t) => ({
+        value: String(t.id),
+        label: `Team #${t.id}: ${t.name}`
       }))
     }
     resourceCache.value[type] = list
@@ -167,15 +177,19 @@ const loadSubjectOptions = async (type) => {
 
 /** 预加载项目/团队候选（供快捷授权下拉），并预热抽屉缓存 */
 const loadQuickLookup = async () => {
-  const [p, t] = await Promise.all([fetchProjects({}), fetchTeams()])
+  const [p, t, u] = await Promise.all([fetchProjects({}), fetchTeams(), fetchUsers({})])
   projects.value = (p.data || p || [])
   teams.value = (t.data || t || [])
-  // 同时写入缓存（抽屉首次打开就不用再查一次）
+  const users = (u.data || u || [])
+  // 同时写入缓存（抽屉首次打开 / 拓扑图切换就不用再查一次）
   resourceCache.value.project = projects.value.map((p) => ({
     value: String(p.id), label: `Project #${p.id}: ${p.name}`
   }))
   subjectCache.value.team = teams.value.map((t) => ({
     value: String(t.id), label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`
+  }))
+  subjectCache.value.user = users.map((u) => ({
+    value: String(u.id), label: `User #${u.id}: ${u.displayName} (@${u.username})`
   }))
 }
 
@@ -200,8 +214,30 @@ const dialogVisible = ref(false)
 const editingTupleId = ref(null)
 
 // 拓扑图参数
-const graphInput = ref({ subjectType: 'user', subjectId: '1', resourceType: 'project', resourceId: '3' })
+const graphInput = ref({ subjectType: 'user', subjectId: '', resourceType: 'project', resourceId: '' })
 const graphData = ref({ subject: '', resource: '', found: false, edges: [] })
+
+/** 拓扑图区资源下拉选项（按 graphInput.resourceType 从共享缓存取） */
+const graphResourceOptions = computed(() => resourceCache.value[graphInput.value.resourceType] || [])
+/** 拓扑图区主体下拉选项（按 graphInput.subjectType 从共享缓存取） */
+const graphSubjectOptions = computed(() => subjectCache.value[graphInput.value.subjectType] || [])
+
+/** 拓扑图：监听资源类型变化 → 清空旧 ID + 触发懒加载 */
+watch(
+  () => graphInput.value.resourceType,
+  async (newType, oldType) => {
+    if (newType !== oldType) graphInput.value.resourceId = ''
+    await loadResourceOptions(newType)
+  }
+)
+/** 拓扑图：监听主体类型变化 → 清空旧 ID + 触发懒加载 */
+watch(
+  () => graphInput.value.subjectType,
+  async (newType, oldType) => {
+    if (newType !== oldType) graphInput.value.subjectId = ''
+    await loadSubjectOptions(newType)
+  }
+)
 
 // 进入页面加载元组 + 项目 + 团队（平行请求）
 onMounted(async () => {
@@ -248,6 +284,7 @@ const submitQuick = async () => {
 // 打开新增弹窗（重置表单与编辑状态）
 const openCreate = () => {
   editingTupleId.value = null
+  skipFormWatch.value = true
   tupleForm.value = {
     resourceType: 'project',
     resourceId: '',
@@ -256,12 +293,20 @@ const openCreate = () => {
     subjectId: '',
     subjectRelation: ''
   }
+  nextTick(() => { skipFormWatch.value = false })
   dialogVisible.value = true
 }
 
 // 打开编辑弹窗（回填元组当前值，进入更新模式）
-const openEdit = (row) => {
+const openEdit = async (row) => {
   editingTupleId.value = row.id
+  // 先确保对应类型的下拉候选已就绪（el-select 需要 options 来把 ID 渲染成 label）
+  await Promise.all([
+    loadResourceOptions(row.resourceType),
+    loadSubjectOptions(row.subjectType)
+  ])
+  // 保护期间：watch 不再因类型值变化而清空 resourceId / subjectId
+  skipFormWatch.value = true
   tupleForm.value = {
     resourceType: row.resourceType,
     resourceId: row.resourceId,
@@ -270,6 +315,8 @@ const openEdit = (row) => {
     subjectId: row.subjectId,
     subjectRelation: row.subjectRelation || ''
   }
+  // 下一帧解除保护，后续用户手动切换类型的清空逻辑恢复生效
+  nextTick(() => { skipFormWatch.value = false })
   dialogVisible.value = true
 }
 
@@ -303,6 +350,14 @@ const onDelete = async (id) => {
 
 // 运行关系路径查询
 const runPath = async () => {
+  if (!graphInput.value.subjectId) {
+    ElMessage.warning('请选择具体主体')
+    return
+  }
+  if (!graphInput.value.resourceId) {
+    ElMessage.warning('请选择具体资源')
+    return
+  }
   const res = await fetchPath(graphInput.value)
   graphData.value = {
     subject: res.subject,
@@ -454,13 +509,33 @@ const runPath = async () => {
         <el-select v-model="graphInput.subjectType" size="small" style="width: 130px">
           <el-option v-for="o in SUBJECT_TYPES" :key="o.value" :label="o.label" :value="o.value" />
         </el-select>
-        <el-input v-model="graphInput.subjectId" size="small" style="width: 90px" placeholder="1" />
+        <el-select
+          v-model="graphInput.subjectId"
+          filterable
+          clearable
+          size="small"
+          style="width: 240px"
+          :placeholder="graphSubjectOptions.length ? '选择或搜索主体…' : '请先选择主体类型'"
+          :loading="optionLoading.subject"
+        >
+          <el-option v-for="o in graphSubjectOptions" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
         <Route class="mx-1 h-4 w-4 text-slate-300" />
         <label class="text-xs text-slate-500">资源</label>
         <el-select v-model="graphInput.resourceType" size="small" style="width: 150px">
           <el-option v-for="o in RESOURCE_TYPES" :key="o.value" :label="o.label" :value="o.value" />
         </el-select>
-        <el-input v-model="graphInput.resourceId" size="small" style="width: 90px" placeholder="3" />
+        <el-select
+          v-model="graphInput.resourceId"
+          filterable
+          clearable
+          size="small"
+          style="width: 240px"
+          :placeholder="graphResourceOptions.length ? '选择或搜索资源…' : '请先选择资源类型'"
+          :loading="optionLoading.resource"
+        >
+          <el-option v-for="o in graphResourceOptions" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
         <el-button size="small" type="primary" :icon="Route" @click="runPath">渲染关系路径</el-button>
       </div>
 

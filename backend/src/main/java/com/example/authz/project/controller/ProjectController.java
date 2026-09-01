@@ -110,6 +110,41 @@ public class ProjectController {
     }
 
     /**
+     * 查看单个项目详情。
+     *
+     * @param id 项目 ID
+     * @return 项目实体（不存在时返回失败响应）
+     */
+    @GetMapping("/{id}")
+    public ApiResponse<Project> detail(@PathVariable Long id) {
+        Project p = projectService.getById(id);
+        if (p == null) {
+            return ApiResponse.fail("项目不存在：" + id);
+        }
+        return ApiResponse.success(p);
+    }
+
+    /**
+     * 更新项目。
+     *
+     * @param id      项目 ID
+     * @param project 更新内容（允许修改 name/department/ownerId/description）
+     * @return 更新后的项目
+     */
+    @PutMapping("/{id}")
+    public ApiResponse<Project> update(@PathVariable Long id, @RequestBody Project project) {
+        Project existing = projectService.getById(id);
+        if (existing == null) {
+            return ApiResponse.fail("项目不存在：" + id);
+        }
+        project.setId(id);
+        // 禁止前端篡改创建时间
+        project.setCreatedAt(existing.getCreatedAt());
+        projectService.updateById(project);
+        return ApiResponse.success(projectService.getById(id));
+    }
+
+    /**
      * 检查某个具体项目的修改权限。
      *
      * @param id 项目 ID
