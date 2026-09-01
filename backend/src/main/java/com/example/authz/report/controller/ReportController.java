@@ -104,11 +104,10 @@ public class ReportController {
             report.setCategory("FINANCIAL");
         }
 
-        report.setId(null);
-        report.setCreatedAt(null);
-
-        reportService.save(report);
-        return ApiResponse.success(report.getId());
+        // 委托服务创建：内部发布 ResourceCreatedEvent，
+        // 由授权层监听器自动预置“创建者即属主”等 ReBAC 元组
+        Report saved = reportService.createReport(report);
+        return ApiResponse.success(saved.getId());
     }
 
     /**
@@ -121,10 +120,7 @@ public class ReportController {
     public ApiResponse<Void> delete(
             @PathVariable Long id
     ) {
-        if (reportService.getById(id) == null) {
-            throw new IllegalArgumentException("报表不存在: " + id);
-        }
-        reportService.removeById(id);
+        reportService.deleteReport(id);
         return ApiResponse.success();
     }
 }

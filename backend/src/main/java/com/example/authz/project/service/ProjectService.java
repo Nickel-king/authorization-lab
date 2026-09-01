@@ -19,6 +19,18 @@ import com.example.authz.project.entity.Project;
 public interface ProjectService extends IService<Project> {
 
     /**
+     * 创建项目。
+     * <p>
+     * 业务层不直接操作 ReBAC 元组表：创建成功后发布
+     * {@link com.example.authz.common.event.ResourceCreatedEvent}，
+     * 由授权层监听器自动预置“创建者即属主”等基础关系元组。
+     *
+     * @param project 待创建的项目
+     * @return 创建完成（含自增主键）的项目
+     */
+    Project createProject(Project project);
+
+    /**
      * 删除项目。
      * <p>
      * 业务层不直接操作 ReBAC 元组表：删除时发布

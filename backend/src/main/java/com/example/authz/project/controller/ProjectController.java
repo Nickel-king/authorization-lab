@@ -110,11 +110,10 @@ public class ProjectController {
             throw new IllegalArgumentException("项目属主不能为空");
         }
 
-        project.setId(null);
-        project.setCreatedAt(null);
-
-        projectService.save(project);
-        return ApiResponse.success(project.getId());
+        // 委托服务创建：内部发布 ResourceCreatedEvent，
+        // 由授权层监听器自动预置“创建者即属主”等 ReBAC 元组
+        Project saved = projectService.createProject(project);
+        return ApiResponse.success(saved.getId());
     }
 
     /**
