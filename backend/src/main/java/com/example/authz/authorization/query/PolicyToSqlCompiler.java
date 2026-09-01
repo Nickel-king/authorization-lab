@@ -5,6 +5,9 @@ import com.example.authz.authorization.policy.EvaluationContext;
 import com.example.authz.authorization.policy.PolicyService;
 import com.example.authz.authorization.policy.entity.Policy;
 import com.example.authz.authorization.policy.entity.PolicyCondition;
+import com.example.authz.common.enums.OperatorEnum;
+import com.example.authz.common.enums.RelationEnum;
+import com.example.authz.common.enums.ResourceTypeEnum;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -187,7 +190,7 @@ public class PolicyToSqlCompiler {
         //    采用关联 EXISTS 子查询，取代“内存中反向推导全部资源 id → id IN (…)”
         //    的大列表下推，避免海量资源场景下 SQL 过长、索引失效。
         //    动态值（目标关系、当前用户 ID）以占位符参数绑定，防止 SQL 注入。
-        if ("HAS_RELATION".equalsIgnoreCase(operator)) {
+        if (OperatorEnum.HAS_RELATION == OperatorEnum.fromValue(operator)) {
 
             // 取当前主体 ID（如 user 的 id），作为关系子查询的关联入参
             Object subjectIdValue = AttributeResolver.resolve(
@@ -241,10 +244,10 @@ public class PolicyToSqlCompiler {
                             ? escaped
                             : "'" + escaped + "'";
 
-            return switch (operator) {
-                case "EQUALS" -> dbColumn + " = " + literal;
-                case "NOT_EQUALS" -> dbColumn + " <> " + literal;
-                default -> null;
+            return switch (OperatorEnum.fromValue(operator)) {
+                case EQUALS -> dbColumn + " = " + literal;
+                case NOT_EQUALS -> dbColumn + " <> " + literal;
+                case null, default -> null;
             };
         }
 
@@ -340,8 +343,8 @@ public class PolicyToSqlCompiler {
     ) {
 
         // 常量：团队主体类型与成员嵌套关系（与本项目 ReBAC 模型一致）
-        final String teamType = "team";
-        final String memberRel = "member";
+        final String teamType = ResourceTypeEnum.TEAM.getValue();
+        final String memberRel = RelationEnum.MEMBER.getValue();
 
         // 目标关系名、当前用户 ID 作为绑定参数（防注入）
         String relPlaceholder = addParam(bindParams, relation);

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.authz.authorization.rebac.dto.RelationPathVO;
 import com.example.authz.authorization.rebac.entity.RelationTuple;
 import com.example.authz.authorization.rebac.mapper.RelationTupleMapper;
+import com.example.authz.common.enums.RelationEnum;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -253,7 +254,7 @@ public class RelationGraphResolver {
                                 )
                                 .eq(
                                         RelationTuple::getRelation,
-                                        "parent"
+                                        RelationEnum.PARENT.getValue()
                                 )
                 );
 
@@ -263,7 +264,7 @@ public class RelationGraphResolver {
                     checkRelationRecursive(
                             parent.getSubjectType(),
                             parent.getSubjectId(),
-                            "admin",
+                            RelationEnum.ADMIN.getValue(),
                             subType,
                             subId,
                             depth + 1

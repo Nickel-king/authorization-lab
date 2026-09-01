@@ -1,6 +1,7 @@
 package com.example.authz.team.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.example.authz.common.enums.RelationEnum;
 import com.example.authz.team.dto.TeamMemberAddDTO;
 import com.example.authz.team.dto.TeamMemberVO;
 import com.example.authz.team.dto.TeamVO;
@@ -21,14 +22,14 @@ import java.util.List;
 public interface TeamService extends IService<Team> {
 
     /** 成员关系名常量：团队对用户的成员关系（注入元组 relation） */
-    String RELATION_MEMBER = "member";
+    String RELATION_MEMBER = RelationEnum.MEMBER.getValue();
 
     /**
      * 组长关系名常量：团队对用户的组长关系（Dual-Tuple 模式中标识管理员的补充元组）。
      * <p>
      * 组长同时持有 member 元组与 leader 元组，避免破坏 ReBAC 继承。
      */
-    String RELATION_LEADER = "leader";
+    String RELATION_LEADER = RelationEnum.LEADER.getValue();
 
     /**
      * 查询团队列表（含关联部门名称与成员数量）。

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.example.authz.authorization.rebac.RelationTupleService;
 import com.example.authz.authorization.rebac.dto.RelationTupleCreateDTO;
 import com.example.authz.authorization.rebac.entity.RelationTuple;
+import com.example.authz.common.enums.ResourceTypeEnum;
 import com.example.authz.department.entity.Department;
 import com.example.authz.department.service.DepartmentService;
 import com.example.authz.team.dto.TeamMemberAddDTO;
@@ -54,10 +55,12 @@ public class TeamServiceImpl
         implements TeamService {
 
     /** 团队在 ReBAC 图中的资源类型常量 */
-    private static final String RESOURCE_TYPE_TEAM = "team";
+    private static final String RESOURCE_TYPE_TEAM =
+            ResourceTypeEnum.TEAM.getValue();
 
     /** 用户在 ReBAC 图中的主体类型常量 */
-    private static final String SUBJECT_TYPE_USER = "user";
+    private static final String SUBJECT_TYPE_USER =
+            ResourceTypeEnum.USER.getValue();
 
     /**
      * 团队成员关系集合：member + leader（Dual-Tuple 模式下均视为团队成员身份）。

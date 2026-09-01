@@ -3,6 +3,8 @@ package com.example.authz.authorization.policy;
 import com.example.authz.authorization.explain.ConditionTrace;
 import com.example.authz.authorization.policy.entity.PolicyCondition;
 import com.example.authz.authorization.rebac.RelationGraphResolver;
+import com.example.authz.common.enums.OperatorEnum;
+import com.example.authz.common.enums.ResourceTypeEnum;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -50,61 +52,65 @@ public class ConditionEvaluator {
     ) {
 
         String operator = condition.getOperator();
+        OperatorEnum operatorEnum = OperatorEnum.fromValue(operator);
 
         boolean matched;
         Object left;
         Object right;
 
-        if ("HAS_RELATION".equalsIgnoreCase(operator)) {
+        // 依据运算符分发：HAS_RELATION 走 ReBAC 关系图判断，其余走属性比较
+        switch (operatorEnum) {
 
-            // 关系判断：left 通常为 SUBJECT.id，
-            // right 为目标关系名（如 "collaborator" / "owner"）
-            left = AttributeResolver.resolve(
-                    context,
-                    condition.getAttributeSource(),
-                    condition.getAttributePath()
-            );
+            case HAS_RELATION -> {
+                // 关系判断：left 通常为 SUBJECT.id，
+                // right 为目标关系名（如 "collaborator" / "owner"）
+                left = AttributeResolver.resolve(
+                        context,
+                        condition.getAttributeSource(),
+                        condition.getAttributePath()
+                );
 
-            right = condition.getValue();
+                right = condition.getValue();
 
-            Map<String, Object> resource =
-                    context.getResource();
+                Map<String, Object> resource =
+                        context.getResource();
 
-            String resourceType =
-                    resource.get("type") != null
-                            ? String.valueOf(
-                                    resource.get("type")
-                            )
-                            : "project";
+                String resourceType =
+                        resource.get("type") != null
+                                ? String.valueOf(
+                                        resource.get("type")
+                                )
+                                : ResourceTypeEnum.PROJECT.getValue();
 
-            String resourceId = String.valueOf(
-                    resource.get("id")
-            );
+                String resourceId = String.valueOf(
+                        resource.get("id")
+                );
 
-            matched = left != null
-                    && resourceId != null
-                    && relationGraphResolver.checkRelation(
-                            resourceType,
-                            resourceId,
-                            String.valueOf(right),
-                            "user",
-                            String.valueOf(left)
-                    );
+                matched = left != null
+                        && resourceId != null
+                        && relationGraphResolver.checkRelation(
+                                resourceType,
+                                resourceId,
+                                String.valueOf(right),
+                                ResourceTypeEnum.USER.getValue(),
+                                String.valueOf(left)
+                        );
+            }
 
-        } else {
+            case null, default -> {
+                left = AttributeResolver.resolve(
+                        context,
+                        condition.getAttributeSource(),
+                        condition.getAttributePath()
+                );
 
-            left = AttributeResolver.resolve(
-                    context,
-                    condition.getAttributeSource(),
-                    condition.getAttributePath()
-            );
+                right = resolveRightValue(
+                        condition,
+                        context
+                );
 
-            right = resolveRightValue(
-                    condition,
-                    context
-            );
-
-            matched = compare(left, right, operator);
+                matched = compare(left, right, operator);
+            }
         }
 
         String leftExpr =
@@ -259,21 +265,29 @@ public class ConditionEvaluator {
             String operator
     ) {
 
-        return switch (operator) {
+        OperatorEnum op = OperatorEnum.fromValue(operator);
+        if (op == null) {
+            throw new IllegalArgumentException(
+                    "Unsupported operator: "
+                            + operator
+            );
+        }
 
-            case "EQUALS" ->
+        return switch (op) {
+
+            case EQUALS ->
                     Objects.equals(
                             normalize(left),
                             normalize(right)
                     );
 
-            case "NOT_EQUALS" ->
+            case NOT_EQUALS ->
                     !Objects.equals(
                             normalize(left),
                             normalize(right)
                     );
 
-            case "CONTAINS" ->
+            case CONTAINS ->
                     left != null
                             && right != null
                             && String.valueOf(left)
@@ -281,7 +295,7 @@ public class ConditionEvaluator {
                                     String.valueOf(right)
                             );
 
-            case "STARTS_WITH" ->
+            case STARTS_WITH ->
                     left != null
                             && right != null
                             && String.valueOf(left)
@@ -289,7 +303,7 @@ public class ConditionEvaluator {
                                     String.valueOf(right)
                             );
 
-            case "ENDS_WITH" ->
+            case ENDS_WITH ->
                     left != null
                             && right != null
                             && String.valueOf(left)
@@ -297,7 +311,7 @@ public class ConditionEvaluator {
                                     String.valueOf(right)
                             );
 
-            case "IN" ->
+            case IN ->
                     right instanceof Collection<?>
                             && ((Collection<?>) right)
                             .contains(left);
