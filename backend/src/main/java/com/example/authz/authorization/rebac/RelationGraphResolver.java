@@ -207,11 +207,14 @@ public class RelationGraphResolver {
         for (RelationTuple tuple : tuples) {
 
             // 情况 A: 直接命中具体主体（如 user:1）
+            // subject_relation 为空（NULL 或空字符串）即视为直接授权，
+            // 与元组表存值（前端写入时留空为 ''）保持一致
             if (tuple.getSubjectType()
                     .equalsIgnoreCase(subType)
                     && tuple.getSubjectId()
                     .equalsIgnoreCase(subId)
-                    && tuple.getSubjectRelation() == null) {
+                    && (tuple.getSubjectRelation() == null
+                            || tuple.getSubjectRelation().isEmpty())) {
 
                 return true;
             }
@@ -220,7 +223,8 @@ public class RelationGraphResolver {
             // (如 project#collaborator@team:1#member)
             // 转化为子问题：判断 subType:subId
             //              是否具有 team:1 的 member 关系
-            if (tuple.getSubjectRelation() != null) {
+            if (tuple.getSubjectRelation() != null
+                    && !tuple.getSubjectRelation().isEmpty()) {
 
                 boolean isMember =
                         checkRelationRecursive(

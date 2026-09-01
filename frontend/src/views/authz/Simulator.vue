@@ -1,11 +1,20 @@
 <script setup>
 // 权限模拟与诊断中心：请求构造 + 决策解释控制台（Step1/2/3）
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Zap, ChevronDown } from 'lucide-vue-next'
+import {
+  Zap,
+  ChevronDown,
+  Network,
+  CheckCircle2,
+  XCircle,
+  GitBranch
+} from 'lucide-vue-next'
 import StatusBadge from '@/components/StatusBadge.vue'
 import SqlPreview from '@/components/SqlPreview.vue'
+import GraphView from '@/components/GraphView.vue'
 import { runSimulator } from '@/api/authorization'
+import { fetchPath } from '@/api/relation'
 import { fetchUsers, fetchProjects } from '@/api/user'
 
 // 读取路由 query（支持从“用户管理-以该身份模拟”带入用户 ID）
@@ -52,18 +61,127 @@ const run = async () => {
   loading.value = true
   try {
     result.value = await runSimulator(request.value)
+    // 预加载命中的 HAS_RELATION 条件对应的关系通路，供拓扑图展示
+    for (const pt of result.value?.decision?.evaluatedPolicies || []) {
+      ensureGraphs(pt)
+    }
   } finally {
     loading.value = false
   }
 }
 
-// 展开/折叠 Step2 中的策略卡片
+// ==================== 决策总看板 ====================
+const decisionMeta = computed(() => {
+  const d = result.value?.decision
+  if (!d) return null
+  return {
+    allowed: d.allowed,
+    decision: d.decision,
+    reason: d.reason,
+    engine: d.engine
+  }
+})
+
+// ==================== 策略评估轨迹 ====================
+
+// 展开/折叠某策略卡片
 const expandedPolicies = ref(new Set())
 const toggleExpand = (code) => {
   const set = new Set(expandedPolicies.value)
-  if (set.has(code)) set.delete(code)
-  else set.add(code)
+  if (set.has(code)) {
+    set.delete(code)
+  } else {
+    set.add(code)
+    // 展开时若存在命中的 HAS_RELATION 条件，立即触发关系通路加载
+    const pt = result.value?.decision?.evaluatedPolicies?.find((p) => p.policyCode === code)
+    if (pt) ensureGraphs(pt)
+  }
   expandedPolicies.value = set
+}
+
+// 时间线节点配色：命中 ALLOW=绿 / 命中 DENY=红 / 未命中=灰
+const timelineType = (pt) => {
+  if (!pt.matched) return 'info'
+  return pt.effect === 'ALLOW' ? 'success' : 'danger'
+}
+
+// 运算符可读文案
+const operatorLabel = {
+  EQUALS: '=',
+  NOT_EQUALS: '≠',
+  IN: '∈',
+  HAS_RELATION: '具有关系',
+  CONTAINS: '包含',
+  STARTS_WITH: '前缀匹配',
+  ENDS_WITH: '后缀匹配'
+}
+
+// 将条件轨迹树拍平为带缩进深度的行（叶子条件 + 逻辑分组节点）
+const flattenTraces = (traces, depth = 0, out = []) => {
+  for (const t of traces || []) {
+    if (t.logicalOperator) {
+      out.push({ kind: 'group', trace: t, depth })
+      flattenTraces(t.children, depth + 1, out)
+    } else {
+      out.push({ kind: 'leaf', trace: t, depth })
+    }
+  }
+  return out
+}
+
+// 生成条件的可读描述（如 “主体是资源的「collaborator」”）
+const describeCondition = (t) => {
+  if (t.logicalOperator) return `逻辑分组 ${t.logicalOperator}`
+  const op = operatorLabel[t.operator] || t.operator
+  if (t.operator === 'HAS_RELATION') {
+    const rel = String(t.rightActualValue ?? t.rightExpression ?? '')
+      .replace(/^['"]|['"]$/g, '')
+    return `主体是资源的「${rel}」`
+  }
+  return `${t.leftExpression} ${op} ${t.rightActualValue ?? t.rightExpression}`
+}
+
+// 某策略下全部“已命中”的 HAS_RELATION 叶子条件（用于关系通路拓扑图）
+const hasRelationLeaves = (pt) => {
+  return flattenTraces(pt.conditionTraces)
+    .filter((r) => r.kind === 'leaf' && r.trace.operator === 'HAS_RELATION' && r.trace.matched)
+    .map((r, i) => ({ ...r, graphKey: `${pt.policyCode}#${i}` }))
+}
+
+// ==================== 关系通路拓扑图（HAS_RELATION 可视化） ====================
+
+// key -> { subject, resource, found, edges, loading }
+const graphPaths = ref({})
+
+// 懒加载当前请求主体→资源的关系通路
+const ensureGraphs = async (pt) => {
+  for (const leaf of hasRelationLeaves(pt)) {
+    if (graphPaths.value[leaf.graphKey]) continue
+    graphPaths.value[leaf.graphKey] = {
+      loading: true,
+      found: false,
+      subject: '',
+      resource: '',
+      edges: []
+    }
+    try {
+      const res = await fetchPath({
+        subjectType: 'user',
+        subjectId: request.value.userId,
+        resourceType: request.value.resource,
+        resourceId: request.value.resourceId
+      })
+      graphPaths.value[leaf.graphKey] = { loading: false, ...res }
+    } catch (e) {
+      graphPaths.value[leaf.graphKey] = {
+        loading: false,
+        found: false,
+        subject: '',
+        resource: '',
+        edges: []
+      }
+    }
+  }
 }
 </script>
 
@@ -131,22 +249,32 @@ const toggleExpand = (code) => {
     <!-- 右：决策解释控制台 -->
     <section class="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
       <template v-if="result">
-        <!-- 决策总看板 -->
+        <!-- ===== 决策总看板：大号彩色横幅 ===== -->
         <div
-          class="flex items-center justify-between rounded-lg px-4 py-3"
+          class="relative overflow-hidden rounded-xl px-5 py-6 shadow-sm"
           :class="
-            result.decision.decision === 'ALLOW'
-              ? 'bg-emerald-50 text-emerald-700'
-              : 'bg-rose-50 text-rose-700'
+            decisionMeta.allowed
+              ? 'bg-gradient-to-r from-emerald-500 to-emerald-400 text-white'
+              : 'bg-gradient-to-r from-rose-500 to-rose-400 text-white'
           "
         >
-          <div class="flex items-center gap-3">
-            <span class="text-2xl font-bold">{{ result.decision.decision }}</span>
-            <span class="text-xs opacity-70">{{ result.decision.reason }}</span>
+          <div class="flex items-center justify-between gap-4">
+            <div class="flex items-center gap-4">
+              <span v-if="decisionMeta.allowed" class="rounded-full bg-white/20 p-2">
+                <CheckCircle2 class="h-10 w-10" />
+              </span>
+              <span v-else class="rounded-full bg-white/20 p-2">
+                <XCircle class="h-10 w-10" />
+              </span>
+              <div>
+                <div class="text-3xl font-black tracking-tight">{{ decisionMeta.decision }}</div>
+                <div class="mt-1 max-w-md text-sm text-white/85">{{ decisionMeta.reason }}</div>
+              </div>
+            </div>
+            <span class="shrink-0 rounded-md bg-white/15 px-2.5 py-1 text-xs font-medium">
+              Engine: {{ decisionMeta.engine }}
+            </span>
           </div>
-          <span class="rounded-md bg-white/70 px-2 py-1 text-xs">
-            Engine: {{ result.decision.engine }}
-          </span>
         </div>
 
         <!-- Step1: RBAC 粗粒度门禁 -->
@@ -161,44 +289,130 @@ const toggleExpand = (code) => {
           </div>
         </div>
 
-        <!-- Step2: 策略评估流水线 -->
+        <!-- Step2: 策略评估轨迹（时间线） -->
         <div class="rounded-lg border border-slate-200">
-          <div class="border-b border-slate-100 px-3 py-2 text-sm font-medium text-slate-700">
-            Step 2 · 策略评估流水线（按优先级）
+          <div class="flex items-center gap-2 border-b border-slate-100 px-3 py-2">
+            <GitBranch class="h-4 w-4 text-indigo-500" />
+            <span class="text-sm font-medium text-slate-700">Step 2 · 策略评估轨迹（按优先级）</span>
           </div>
-          <div class="space-y-2 p-2">
-            <div
-              v-for="pt in result.decision.evaluatedPolicies"
-              :key="pt.policyCode"
-              class="rounded-md border"
-              :class="pt.matched ? 'border-emerald-200 bg-emerald-50/50' : 'border-slate-200 bg-white'"
-            >
-              <button class="flex w-full items-center justify-between px-3 py-2" @click="toggleExpand(pt.policyCode)">
-                <span class="flex items-center gap-2 text-sm">
-                  <code class="text-xs text-indigo-600">{{ pt.policyCode }}</code>
-                  <StatusBadge :type="pt.effect" />
-                  <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">priority {{ pt.priority }}</span>
-                </span>
-                <ChevronDown class="h-4 w-4 text-slate-400" :class="expandedPolicies.has(pt.policyCode) ? 'rotate-180' : ''" />
-              </button>
-
-              <div v-if="expandedPolicies.has(pt.policyCode)" class="border-t border-slate-100 px-3 py-2">
-                <div class="mb-1 text-xs text-slate-500">
-                  {{ pt.matched ? '命中：允许放行' : '未命中策略（未触发条件）' }}
-                </div>
-                <ul class="space-y-1">
-                  <li v-for="(c, i) in pt.conditionTraces" :key="i" class="flex items-center gap-2 text-xs">
-                    <span class="rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
-                      {{ c.leftExpression }}
-                      <span class="text-slate-400">({{ c.leftActualValue }})</span>
-                      <span class="mx-1 text-indigo-500">{{ c.operator }}</span>
-                      {{ c.rightExpression }}
-                      <span class="text-slate-400">({{ c.rightActualValue }})</span>
+          <div class="px-4 py-4">
+            <el-timeline v-if="result.decision.evaluatedPolicies.length">
+              <el-timeline-item
+                v-for="pt in result.decision.evaluatedPolicies"
+                :key="pt.policyCode"
+                :type="timelineType(pt)"
+                :hollow="!pt.matched"
+              >
+                <!-- 策略头部（可点击展开） -->
+                <button
+                  class="flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors"
+                  :class="
+                    pt.matched && pt.effect === 'ALLOW'
+                      ? 'border-emerald-200 bg-emerald-50/60'
+                      : pt.matched
+                        ? 'border-rose-200 bg-rose-50/60'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                  "
+                  @click="toggleExpand(pt.policyCode)"
+                >
+                  <span class="flex flex-wrap items-center gap-2">
+                    <code class="text-xs font-semibold text-indigo-600">{{ pt.policyCode }}</code>
+                    <span v-if="pt.policyName" class="text-sm text-slate-700">{{ pt.policyName }}</span>
+                    <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                      priority {{ pt.priority }}
                     </span>
-                    <StatusBadge :type="c.matched ? 'ALLOW' : 'DENY'" :text="c.matched ? 'True' : 'False'" />
-                  </li>
-                </ul>
-              </div>
+                  </span>
+                  <span class="flex items-center gap-2">
+                    <StatusBadge :type="pt.effect" />
+                    <StatusBadge
+                      :type="pt.matched ? (pt.effect === 'ALLOW' ? 'ALLOW' : 'DENY') : 'DISABLED'"
+                      :text="pt.matched ? '命中' : '未命中'"
+                    />
+                    <ChevronDown
+                      class="h-4 w-4 text-slate-400 transition-transform"
+                      :class="expandedPolicies.has(pt.policyCode) ? 'rotate-180' : ''"
+                    />
+                  </span>
+                </button>
+
+                <!-- 展开：精确条件轨迹 -->
+                <div
+                  v-if="expandedPolicies.has(pt.policyCode)"
+                  class="mt-2 space-y-2 rounded-lg border border-slate-100 bg-slate-50/60 p-3"
+                >
+                  <!-- 命中摘要 -->
+                  <div
+                    class="flex items-center gap-2 text-xs"
+                    :class="pt.matched ? 'text-emerald-700' : 'text-slate-500'"
+                  >
+                    <CheckCircle2 v-if="pt.matched" class="h-4 w-4" />
+                    <XCircle v-else class="h-4 w-4" />
+                    <span>
+                      {{
+                        pt.matched
+                          ? (pt.effect === 'ALLOW' ? '策略命中，允许放行：' : '策略命中，执行拒绝：')
+                          : '策略未命中（存在未满足的条件）：'
+                      }}
+                    </span>
+                  </div>
+
+                  <!-- 条件轨迹行（树形缩进：逻辑分组 + 叶子比较） -->
+                  <div
+                    v-for="(row, i) in flattenTraces(pt.conditionTraces)"
+                    :key="i"
+                    class="flex items-center gap-2 text-xs"
+                    :style="{ paddingLeft: row.depth * 18 + 'px' }"
+                  >
+                    <template v-if="row.kind === 'group'">
+                      <span class="rounded bg-indigo-100 px-1.5 py-0.5 font-medium text-indigo-700">
+                        {{ row.trace.logicalOperator }}
+                      </span>
+                      <span class="text-slate-500">分组</span>
+                      <StatusBadge :type="row.trace.matched ? 'ALLOW' : 'DENY'" :text="row.trace.matched ? 'True' : 'False'" />
+                    </template>
+                    <template v-else>
+                      <span
+                        class="flex flex-wrap items-center gap-1.5 rounded bg-white px-2 py-1 text-slate-600 shadow-sm ring-1 ring-slate-100"
+                      >
+                        <span class="font-medium text-slate-700">{{ describeCondition(row.trace) }}</span>
+                        <span class="text-slate-300">|</span>
+                        <span class="text-slate-400">
+                          {{ row.trace.leftExpression }}({{ row.trace.leftActualValue }})
+                          <span class="mx-0.5 text-indigo-500">{{ row.trace.operator }}</span>
+                          {{ row.trace.rightExpression }}({{ row.trace.rightActualValue }})
+                        </span>
+                      </span>
+                      <StatusBadge :type="row.trace.matched ? 'ALLOW' : 'DENY'" :text="row.trace.matched ? 'True' : 'False'" />
+                    </template>
+                  </div>
+
+                  <!-- 命中的 HAS_RELATION 条件 → 关系通路拓扑图 -->
+                  <div v-if="hasRelationLeaves(pt).length" class="mt-1 border-t border-slate-200 pt-2">
+                    <div class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-600">
+                      <Network class="h-3.5 w-3.5 text-indigo-500" />
+                      关系通路（HAS_RELATION 可视化）
+                    </div>
+                    <div v-for="leaf in hasRelationLeaves(pt)" :key="leaf.graphKey" class="mb-2">
+                      <div
+                        v-if="graphPaths[leaf.graphKey]?.loading"
+                        class="flex h-24 items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-400"
+                      >
+                        正在推导关系通路…
+                      </div>
+                      <GraphView
+                        v-else-if="graphPaths[leaf.graphKey]"
+                        :subject="`user:${request.userId}`"
+                        :resource="`${request.resource}:${request.resourceId}`"
+                        :found="graphPaths[leaf.graphKey].found"
+                        :edges="graphPaths[leaf.graphKey].edges"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </el-timeline-item>
+            </el-timeline>
+            <div v-else class="py-6 text-center text-xs text-slate-400">
+              本次评估无策略参与
             </div>
           </div>
         </div>
