@@ -5,14 +5,19 @@ import * as echarts from 'echarts'
 import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps({
-  // 起始主体 key，如 user:1
+  // 起始主体 key，如 user:1（路径模式）
   subject: { type: String, default: '' },
-  // 目标资源 key，如 project:3
+  // 目标资源 key，如 project:3（路径模式）
   resource: { type: String, default: '' },
-  // 是否推导出通路
+  // 是否推导出通路（路径模式）
   found: { type: Boolean, default: false },
-  // 沿正向序的关系元组序列
-  edges: { type: Array, default: () => [] }
+  // 沿正向序的关系元组序列（路径模式）
+  edges: { type: Array, default: () => [] },
+  // ===== 通用有向图模式（图谱模式，nodes/links 任一非空时启用） =====
+  // 节点：[{ id: 'user:1', name: '张三', type: 'user' }]
+  nodes: { type: Array, default: () => [] },
+  // 有向边：[{ source: 'user:1', target: 'project:3', relation: 'owner', subjectRelation: '' }]
+  links: { type: Array, default: () => [] }
 })
 
 const domRef = ref(null)
@@ -22,13 +27,87 @@ let chart = null
 const colorOf = (type) => {
   if (type === 'user') return '#3b82f6'
   if (type === 'team') return '#f97316'
+  if (type === 'dept') return '#8b5cf6'
   return '#22c55e'
 }
 
-// 构建 ECharts graph 数据：节点 + 有向边
+// 是否处于通用有向图模式
+const isGraphMode = () => props.nodes.length > 0 || props.links.length > 0
+
+// 通用有向图布局（force 力导向，支持任意节点/边拓扑）
+const buildGraphOption = () => {
+  const typeIndex = new Map()
+  const categories = []
+  const nodes = props.nodes.map((n) => {
+    const type = n.type || String(n.id).split(':')[0]
+    if (!typeIndex.has(type)) {
+      typeIndex.set(type, categories.length)
+      categories.push({ name: type })
+    }
+    return {
+      id: n.id,
+      name: n.name || n.id,
+      category: typeIndex.get(type),
+      symbolSize: 56,
+      itemStyle: { color: colorOf(type) }
+    }
+  })
+  const links = props.links.map((l) => ({
+    source: l.source,
+    target: l.target,
+    label: {
+      show: true,
+      formatter: l.subjectRelation
+        ? `${l.relation}\n(${l.subjectRelation})`
+        : l.relation,
+      fontSize: 11,
+      color: '#475569'
+    },
+    lineStyle: { type: 'solid', color: '#94a3b8', width: 2 }
+  }))
+  return {
+    tooltip: {},
+    legend: {
+      top: 4,
+      data: categories.map((c) => c.name)
+    },
+    series: [
+      {
+        type: 'graph',
+        layout: 'force',
+        roam: true,
+        draggable: true,
+        force: {
+          repulsion: 320,
+          edgeLength: [80, 160],
+          gravity: 0.12
+        },
+        data: nodes,
+        links,
+        categories,
+        edgeSymbol: ['none', 'arrow'],
+        edgeSymbolSize: 10,
+        label: {
+          show: true,
+          position: 'bottom',
+          color: '#475569',
+          fontSize: 12,
+          fontWeight: 500
+        },
+        lineStyle: { color: '#94a3b8', width: 2 },
+        emphasis: {
+          focus: 'adjacency',
+          lineStyle: { width: 4, color: '#6366f1' }
+        }
+      }
+    ]
+  }
+}
+
+// 构建 ECharts graph 数据：节点 + 有向边（线性路径模式）
 // 布局策略：线性链路按等距水平排列（手动 x/y 坐标），
 // 避免 force 力导向的迭代抖动 / 折线拉扯问题
-const buildOption = () => {
+const buildPathOption = () => {
   const nodes = []
   const links = []
   const nodeSet = new Map()
@@ -128,6 +207,11 @@ const buildOption = () => {
   }
 }
 
+// 构建当前模式下的 ECharts option：图谱模式优先，否则线性路径模式
+const buildOption = () => {
+  return isGraphMode() ? buildGraphOption() : buildPathOption()
+}
+
 // 渲染图表
 const render = () => {
   if (!domRef.value) return
@@ -143,10 +227,13 @@ onMounted(async () => {
   render()
 })
 
-// 监听 edges/subject/resource/found 变化
-watch(() => [props.subject, props.resource, props.edges, props.found], () => {
-  render()
-})
+// 监听路径 / 图谱模式 props 变化
+watch(
+  () => [props.subject, props.resource, props.edges, props.found, props.nodes, props.links],
+  () => {
+    render()
+  }
+)
 
 // 页面卸载时释放图表实例
 onBeforeUnmount(() => {
@@ -159,8 +246,14 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="rounded-lg border border-slate-200 bg-white p-4">
-    <!-- 状态行：可达性说明 + 起点/终点 -->
-    <div class="mb-3 flex items-center justify-between">
+    <!-- 状态行：图谱模式显示统计，路径模式显示可达性说明 + 起点/终点 -->
+    <div v-if="isGraphMode()" class="mb-3 flex items-center justify-between">
+      <div class="flex items-center gap-2 text-sm text-slate-600">
+        <span>图谱共 <b class="text-indigo-600">{{ nodes.length }}</b> 个节点 · <b class="text-indigo-600">{{ links.length }}</b> 条关系边</span>
+      </div>
+      <StatusBadge :type="nodes.length ? 'ALLOW' : 'DISABLED'" :text="nodes.length ? '已渲染' : '空图谱'" />
+    </div>
+    <div v-else class="mb-3 flex items-center justify-between">
       <div class="flex items-center gap-2 text-sm text-slate-600">
         <span>主体</span>
         <code class="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700">{{ subject }}</code>

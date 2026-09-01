@@ -157,6 +157,7 @@ const emitSelect = (subjectType, subjectId, subjectRelation, _label) => {
     :model-value="modelValue"
     width="520px"
     title="选择授权主体"
+    append-to-body
     @update:model-value="(v) => emit('update:modelValue', v)"
   >
     <el-tabs v-model="activeTab">

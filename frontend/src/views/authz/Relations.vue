@@ -1,18 +1,20 @@
 <script setup>
 // 协作图谱与关系元组（/authz/relations）
-// 顶部快捷授权表单 + 元组数据清单 / 交互式拓扑图 双视图
+// ReBAC "God-Mode" 管理台：元组数据清单（ID→名称人类可读） / 交互式有向图谱 双视图
+// 顶部快捷授权表单 + 安全护栏（手工新增元组属于超级管理员越权操作）
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  Plus, Trash2, Search, Map, Table2, Route, Pencil, FolderKanban, UsersRound
+  Plus, Trash2, Search, Map, Table2, Pencil, FolderKanban, UsersRound,
+  ShieldCheck, UserRound, Network
 } from 'lucide-vue-next'
 import GraphView from '@/components/GraphView.vue'
+import SubjectPicker from '@/components/SubjectPicker.vue'
 import {
   fetchTuples,
   createTuple,
   updateTuple,
-  deleteTuple,
-  fetchPath
+  deleteTuple
 } from '@/api/relation'
 import { fetchProjects, fetchUsers } from '@/api/user'
 import { fetchReports } from '@/api/report'
@@ -30,11 +32,15 @@ const RESOURCE_TYPES = [
   { value: 'team', label: '团队 (team)' }
 ]
 
-/** 关系字典：与后端 relation 字段对齐 */
+/** 关系字典：与后端 relation 字段对齐（筛选 + 下拉共用） */
 const RELATIONS = [
   { value: 'owner', label: '属主 (owner)' },
   { value: 'collaborator', label: '协作者 (collaborator)' },
+  { value: 'editor', label: '编辑者 (editor)' },
+  { value: 'viewer', label: '查看者 (viewer)' },
   { value: 'member', label: '成员 (member)' },
+  { value: 'leader', label: '组长 (leader)' },
+  { value: 'assignee', label: '指派对象 (assignee)' },
   { value: 'parent', label: '上级 (parent)' }
 ]
 
@@ -44,6 +50,16 @@ const SUBJECT_TYPES = [
   { value: 'team', label: '团队 (team)' }
 ]
 
+/** 实体类型元数据：图标 + 中文名（用于 ID→名称 人类可读徽章） */
+const TYPE_META = {
+  user: { icon: '👤', zh: 'User' },
+  team: { icon: '👥', zh: 'Team' },
+  dept: { icon: '🏢', zh: 'Dept' },
+  role: { icon: '🛡️', zh: 'Role' },
+  project: { icon: '📁', zh: 'Project' },
+  report: { icon: '📊', zh: 'Report' }
+}
+
 /** 资源类型中文 label 快捷查找 */
 const resourceTypeLabel = (v) => RESOURCE_TYPES.find((o) => o.value === v)?.label || v
 /** 关系中文 label 快捷查找 */
@@ -52,31 +68,61 @@ const relationLabel = (v) => RELATIONS.find((o) => o.value === v)?.label || v
 const subjectTypeLabel = (v) => SUBJECT_TYPES.find((o) => o.value === v)?.label || v
 
 /**
- * 根据 (resourceType, resourceId) 查资源名称。
- * 优先走预热缓存，找不到时回退到 #id 显示，保证不会出现空白。
+ * 主体 → 人类可读徽章（如 👤 User: 李四 (2)）。
+ * 优先走预热缓存（含名称），找不到时回退为 #id，保证不出现空白。
  */
-const resourceName = (type, id) => {
-  if (id == null) return '-'
-  const strId = String(id)
-  const opt = (resourceCache.value[type] || []).find((o) => o.value === strId)
-  return opt ? opt.label : `#${id}`
-}
-/** 根据 (subjectType, subjectId) 查主体名称，同上 */
-const subjectName = (type, id) => {
-  if (id == null) return '-'
-  const strId = String(id)
-  const opt = (subjectCache.value[type] || []).find((o) => o.value === strId)
-  return opt ? opt.label : `#${id}`
+const subjectBadge = (type, id) => {
+  if (id == null) return { icon: TYPE_META[type]?.icon || '🏷️', zh: TYPE_META[type]?.zh || type, name: '-', id: null }
+  const opt = (subjectCache.value[type] || []).find((o) => o.value === String(id))
+  return {
+    icon: TYPE_META[type]?.icon || '🏷️',
+    zh: TYPE_META[type]?.zh || type,
+    name: opt ? opt.name : `#${id}`,
+    id: opt ? opt.id : id
+  }
 }
 
-// 元组列表
+/** 资源 → 人类可读徽章（如 📁 Project: 人工智能研究项目 (1)） */
+const resourceBadge = (type, id) => {
+  if (id == null) return { icon: TYPE_META[type]?.icon || '🏷️', zh: TYPE_META[type]?.zh || type, name: '-', id: null }
+  const opt = (resourceCache.value[type] || []).find((o) => o.value === String(id))
+  return {
+    icon: TYPE_META[type]?.icon || '🏷️',
+    zh: TYPE_META[type]?.zh || type,
+    name: opt ? opt.name : `#${id}`,
+    id: opt ? opt.id : id
+  }
+}
+
+/** 实体名称（资源或主体共用，供图谱节点展示） */
+const entityName = (type, id) => {
+  const opt = (resourceCache.value[type] || subjectCache.value[type] || []).find((o) => o.value === String(id))
+  return opt ? opt.name : (id == null ? '-' : `#${id}`)
+}
+
+// 元组列表（服务器端数据源）
 const tuples = ref([])
+
+// ------------ 客户端筛选（资源类型 / 关系 / 主体类型）------------
+
+/** 筛选条件：下拉即时过滤，无需请求后端 */
+const filters = ref({ resourceType: '', relation: '', subjectType: '' })
+
+/** 经过客户端筛选后的元组（表格与图谱共同的数据源） */
+const filteredTuples = computed(() => {
+  return tuples.value.filter((t) => {
+    if (filters.value.resourceType && t.resourceType !== filters.value.resourceType) return false
+    if (filters.value.relation && t.relation !== filters.value.relation) return false
+    if (filters.value.subjectType && t.subjectType !== filters.value.subjectType) return false
+    return true
+  })
+})
 
 // ------------ 资源/主体 按需懒加载缓存（联动：类型切换 → 查对应表 → 下拉填充）------------
 
-/** 资源候选缓存：key=resourceType */
+/** 资源候选缓存：key=resourceType；条目 { value, label, name, id } */
 const resourceCache = ref({ project: null, report: null })
-/** 主体候选缓存：key=subjectType */
+/** 主体候选缓存：key=subjectType；条目 { value, label, name, id } */
 const subjectCache = ref({ user: null, team: null })
 /** 下拉 loading 态（避免重复请求 / 显示加载占位） */
 const optionLoading = ref({ resource: false, subject: false })
@@ -94,14 +140,14 @@ const tupleForm = ref({
   subjectRelation: ''
 })
 
+/** SubjectPicker 主体选择弹窗可见性 */
+const pickerVisible = ref(false)
+
 /**
  * 资源下拉选项（随 tupleForm.resourceType 自动联动，缓存命中秒出）
  * <p>由 watch 监听类型变化 → 触发 loadResourceOptions → 写入缓存 → 此 computed 自动更新</p>
  */
 const resourceOptions = computed(() => resourceCache.value[tupleForm.value.resourceType] || [])
-
-/** 主体下拉选项（随 tupleForm.subjectType 自动联动） */
-const subjectOptions = computed(() => subjectCache.value[tupleForm.value.subjectType] || [])
 
 /** 监听资源类型变化：自动清空旧 ID + 按需加载新资源列表 */
 watch(
@@ -137,20 +183,17 @@ const loadResourceOptions = async (type) => {
     if (type === 'project') {
       const res = await fetchProjects({})
       list = (res.data || res || []).map((p) => ({
-        value: String(p.id),
-        label: `Project #${p.id}: ${p.name}`
+        value: String(p.id), label: `Project #${p.id}: ${p.name}`, name: p.name, id: p.id
       }))
     } else if (type === 'report') {
       const res = await fetchReports({})
       list = (res.data || res || []).map((r) => ({
-        value: String(r.id),
-        label: `Report #${r.id}: ${r.name}`
+        value: String(r.id), label: `Report #${r.id}: ${r.name}`, name: r.name, id: r.id
       }))
     } else if (type === 'team') {
       const res = await fetchTeams()
       list = (res.data || res || []).map((t) => ({
-        value: String(t.id),
-        label: `Team #${t.id}: ${t.name}`
+        value: String(t.id), label: `Team #${t.id}: ${t.name}`, name: t.name, id: t.id
       }))
     }
     resourceCache.value[type] = list
@@ -175,13 +218,17 @@ const loadSubjectOptions = async (type) => {
       const res = await fetchUsers({})
       list = (res.data || res || []).map((u) => ({
         value: String(u.id),
-        label: `User #${u.id}: ${u.displayName} (@${u.username})`
+        label: `User #${u.id}: ${u.displayName} (@${u.username})`,
+        name: u.displayName,
+        id: u.id
       }))
     } else if (type === 'team') {
       const res = await fetchTeams()
       list = (res.data || res || []).map((t) => ({
         value: String(t.id),
-        label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`
+        label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`,
+        name: t.name,
+        id: t.id
       }))
     }
     subjectCache.value[type] = list
@@ -202,25 +249,25 @@ const loadQuickLookup = async () => {
   teams.value = (t.data || t || [])
   const users = (u.data || u || [])
   const reports = (r.data || r || [])
-  // 同时写入缓存（抽屉首次打开 / 拓扑图切换就不用再查一次）
+  // 同时写入缓存（抽屉首次打开 / 图谱切换就不用再查一次）
   resourceCache.value.project = projects.value.map((p) => ({
-    value: String(p.id), label: `Project #${p.id}: ${p.name}`
+    value: String(p.id), label: `Project #${p.id}: ${p.name}`, name: p.name, id: p.id
   }))
   resourceCache.value.team = teams.value.map((t) => ({
-    value: String(t.id), label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`
+    value: String(t.id), label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`, name: t.name, id: t.id
   }))
   resourceCache.value.report = reports.map((r) => ({
-    value: String(r.id), label: `Report #${r.id}: ${r.name}`
+    value: String(r.id), label: `Report #${r.id}: ${r.name}`, name: r.name, id: r.id
   }))
   subjectCache.value.team = teams.value.map((t) => ({
-    value: String(t.id), label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`
+    value: String(t.id), label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`, name: t.name, id: t.id
   }))
   subjectCache.value.user = users.map((u) => ({
-    value: String(u.id), label: `User #${u.id}: ${u.displayName} (@${u.username})`
+    value: String(u.id), label: `User #${u.id}: ${u.displayName} (@${u.username})`, name: u.displayName, id: u.id
   }))
 }
 
-// 表格搜索条件
+// 表格搜索条件（服务端按 主体/资源 反查）
 const search = ref({ subject: '', resource: '' })
 
 // 快捷授权表单（资源→关系→对象）
@@ -240,32 +287,6 @@ const teams = ref([])
 const dialogVisible = ref(false)
 const editingTupleId = ref(null)
 
-// 拓扑图参数
-const graphInput = ref({ subjectType: 'user', subjectId: '', resourceType: 'project', resourceId: '' })
-const graphData = ref({ subject: '', resource: '', found: false, edges: [] })
-
-/** 拓扑图区资源下拉选项（按 graphInput.resourceType 从共享缓存取） */
-const graphResourceOptions = computed(() => resourceCache.value[graphInput.value.resourceType] || [])
-/** 拓扑图区主体下拉选项（按 graphInput.subjectType 从共享缓存取） */
-const graphSubjectOptions = computed(() => subjectCache.value[graphInput.value.subjectType] || [])
-
-/** 拓扑图：监听资源类型变化 → 清空旧 ID + 触发懒加载 */
-watch(
-  () => graphInput.value.resourceType,
-  async (newType, oldType) => {
-    if (newType !== oldType) graphInput.value.resourceId = ''
-    await loadResourceOptions(newType)
-  }
-)
-/** 拓扑图：监听主体类型变化 → 清空旧 ID + 触发懒加载 */
-watch(
-  () => graphInput.value.subjectType,
-  async (newType, oldType) => {
-    if (newType !== oldType) graphInput.value.subjectId = ''
-    await loadSubjectOptions(newType)
-  }
-)
-
 // 进入页面加载元组 + 项目 + 团队（平行请求）
 onMounted(async () => {
   // 预加载：元组列表（主数据源）+ 项目/团队（供快捷授权下拉，并预热抽屉缓存）
@@ -273,7 +294,7 @@ onMounted(async () => {
   tuples.value = t
 })
 
-// 加载元组（带可选过滤）
+// 加载元组（带可选过滤：主体/资源 走服务端）
 const loadTuples = async () => {
   const params = {}
   if (search.value.subject) {
@@ -347,6 +368,13 @@ const openEdit = async (row) => {
   dialogVisible.value = true
 }
 
+// SubjectPicker 选中主体：回填表单
+const onPickSubject = ({ subjectType, subjectId, subjectRelation }) => {
+  tupleForm.value.subjectType = subjectType
+  tupleForm.value.subjectId = subjectId
+  tupleForm.value.subjectRelation = subjectRelation || ''
+}
+
 // 提交新增或编辑
 const submitTuple = async () => {
   if (!tupleForm.value.resourceId || !tupleForm.value.subjectId) {
@@ -375,47 +403,66 @@ const onDelete = async (id) => {
   await loadTuples()
 }
 
-// 运行关系路径查询
-const runPath = async () => {
-  if (!graphInput.value.subjectId) {
-    ElMessage.warning('请选择具体主体')
-    return
+// ------------ 图谱视图：由筛选后的元组构建有向图（nodes/links）------------
+
+/** 图谱节点：去重合并资源侧 + 主体侧实体 */
+const graphNodes = computed(() => {
+  const map = new Map()
+  for (const t of filteredTuples.value) {
+    const entities = [
+      { id: `${t.subjectType}:${t.subjectId}`, type: t.subjectType },
+      { id: `${t.resourceType}:${t.resourceId}`, type: t.resourceType }
+    ]
+    for (const e of entities) {
+      if (!map.has(e.id)) {
+        map.set(e.id, { id: e.id, type: e.type, name: entityName(e.type, e.id.split(':')[1]) })
+      }
+    }
   }
-  if (!graphInput.value.resourceId) {
-    ElMessage.warning('请选择具体资源')
-    return
-  }
-  const res = await fetchPath(graphInput.value)
-  graphData.value = {
-    subject: res.subject,
-    resource: res.resource,
-    found: res.found,
-    edges: res.edges
-  }
-}
+  return [...map.values()]
+})
+
+/** 图谱有向边：主体 --relation--> 资源 */
+const graphLinks = computed(() => {
+  return filteredTuples.value.map((t) => ({
+    source: `${t.subjectType}:${t.subjectId}`,
+    target: `${t.resourceType}:${t.resourceId}`,
+    relation: t.relation,
+    subjectRelation: t.subjectRelation || ''
+  }))
+})
 </script>
 
 <template>
   <div class="space-y-4">
-    <!-- 视图切换 -->
-    <div class="flex items-center gap-2">
-      <button
-        class="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm"
-        :class="view === 'table' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border border-slate-200'"
-        @click="view = 'table'"
-      >
-        <Table2 class="h-4 w-4" /> 元组数据清单
-      </button>
-      <button
-        class="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm"
-        :class="view === 'graph' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border border-slate-200'"
-        @click="view = 'graph'"
-      >
-        <Map class="h-4 w-4" /> 交互式拓扑图
-      </button>
+    <!-- 页头：标题 + 视图切换（表格 <-> 图谱） -->
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2 text-sm font-semibold text-slate-800">
+        <ShieldCheck class="h-5 w-5 text-indigo-600" />
+        协作关系元组（ReBAC 管理台）
+        <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-normal text-slate-500">
+          共 {{ filteredTuples.length }} 条（筛选后）
+        </span>
+      </div>
+      <div class="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
+        <button
+          class="flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+          :class="view === 'table' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+          @click="view = 'table'"
+        >
+          <Table2 class="h-3.5 w-3.5" /> 表格视图
+        </button>
+        <button
+          class="flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+          :class="view === 'graph' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+          @click="view = 'graph'"
+        >
+          <Map class="h-3.5 w-3.5" /> 图谱视图
+        </button>
+      </div>
     </div>
 
-    <!-- 子视图 A：元组管理 -->
+    <!-- 子视图 A：元组管理（表格） -->
     <section v-if="view === 'table'" class="space-y-3">
       <!-- 快捷授权表单 -->
       <div class="rounded-lg border border-indigo-100 bg-indigo-50/40 p-4">
@@ -461,20 +508,30 @@ const runPath = async () => {
         </div>
       </div>
 
-      <!-- 搜索栏 + 新增 -->
+      <!-- 筛选栏：资源类型 / 关系 / 主体类型 + 主体/资源文本搜索 + 新增 -->
       <div class="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-3">
         <Search class="h-4 w-4 text-slate-400" />
+        <el-select v-model="filters.resourceType" size="small" style="width: 150px" placeholder="资源类型" clearable>
+          <el-option v-for="o in RESOURCE_TYPES" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
+        <el-select v-model="filters.relation" size="small" style="width: 160px" placeholder="关系" clearable>
+          <el-option v-for="o in RELATIONS" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
+        <el-select v-model="filters.subjectType" size="small" style="width: 150px" placeholder="主体类型" clearable>
+          <el-option v-for="o in SUBJECT_TYPES" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
+        <span class="text-xs text-slate-300">|</span>
         <el-input
           v-model="search.subject"
           size="small"
-          style="width: 180px"
+          style="width: 150px"
           placeholder="主体，如 user:1"
           @keyup.enter="loadTuples"
         />
         <el-input
           v-model="search.resource"
           size="small"
-          style="width: 180px"
+          style="width: 170px"
           placeholder="资源，如 project:3"
           @keyup.enter="loadTuples"
         />
@@ -486,20 +543,27 @@ const runPath = async () => {
         </div>
       </div>
 
-      <!-- 元组表格 -->
+      <!-- 元组表格（ID→名称 人类可读徽章） -->
       <div class="overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <el-table :data="tuples" style="width: 100%">
+        <el-table :data="filteredTuples" style="width: 100%">
           <el-table-column label="资源类型" width="150">
             <template #default="{ row }">
               <span class="text-sm text-slate-700">{{ resourceTypeLabel(row.resourceType) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="资源" min-width="260">
-            <template #default="{ row }">{{ resourceName(row.resourceType, row.resourceId) }}</template>
-          </el-table-column>
-          <el-table-column label="关系" width="160">
+          <el-table-column label="资源" min-width="280">
             <template #default="{ row }">
-              <span class="text-sm text-indigo-700">{{ relationLabel(row.relation) }}</span>
+              <span class="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 px-2 py-0.5 ring-1 ring-inset ring-emerald-600/10">
+                <span>{{ resourceBadge(row.resourceType, row.resourceId).icon }}</span>
+                <span class="text-xs text-slate-500">{{ resourceBadge(row.resourceType, row.resourceId).zh }}:</span>
+                <span class="text-xs font-semibold text-emerald-700">{{ resourceBadge(row.resourceType, row.resourceId).name }}</span>
+                <span class="text-[10px] text-slate-400">({{ resourceBadge(row.resourceType, row.resourceId).id }})</span>
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="关系" width="170">
+            <template #default="{ row }">
+              <span class="text-sm font-medium text-indigo-700">{{ relationLabel(row.relation) }}</span>
             </template>
           </el-table-column>
           <el-table-column label="主体类型" width="130">
@@ -507,10 +571,17 @@ const runPath = async () => {
               <span class="text-sm text-slate-700">{{ subjectTypeLabel(row.subjectType) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="主体" min-width="240">
+          <el-table-column label="主体" min-width="280">
             <template #default="{ row }">
-              <span>{{ subjectName(row.subjectType, row.subjectId) }}</span>
-              <span v-if="row.subjectRelation" class="ml-1 text-xs text-slate-400">#{{ row.subjectRelation }}</span>
+              <span class="inline-flex items-center gap-1.5 rounded-md bg-blue-50 px-2 py-0.5 ring-1 ring-inset ring-blue-600/10">
+                <span>{{ subjectBadge(row.subjectType, row.subjectId).icon }}</span>
+                <span class="text-xs text-slate-500">{{ subjectBadge(row.subjectType, row.subjectId).zh }}:</span>
+                <span class="text-xs font-semibold text-blue-700">{{ subjectBadge(row.subjectType, row.subjectId).name }}</span>
+                <span class="text-[10px] text-slate-400">({{ subjectBadge(row.subjectType, row.subjectId).id }})</span>
+              </span>
+              <span v-if="row.subjectRelation" class="ml-1 rounded bg-slate-100 px-1 py-0.5 text-[10px] text-slate-500">
+                #{{ row.subjectRelation }}
+              </span>
             </template>
           </el-table-column>
           <el-table-column label="创建时间" min-width="170">
@@ -528,53 +599,51 @@ const runPath = async () => {
       </div>
     </section>
 
-    <!-- 子视图 B：拓扑图 -->
+    <!-- 子视图 B：图谱（由筛选结果构建有向图） -->
     <section v-else class="space-y-3">
+      <!-- 筛选栏：与表格视图共享同一份筛选条件 -->
       <div class="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-3">
-        <label class="text-xs text-slate-500">主体</label>
-        <el-select v-model="graphInput.subjectType" size="small" style="width: 130px">
-          <el-option v-for="o in SUBJECT_TYPES" :key="o.value" :label="o.label" :value="o.value" />
-        </el-select>
-        <el-select
-          v-model="graphInput.subjectId"
-          filterable
-          clearable
-          size="small"
-          style="width: 240px"
-          :placeholder="graphSubjectOptions.length ? '选择或搜索主体…' : '请先选择主体类型'"
-          :loading="optionLoading.subject"
-        >
-          <el-option v-for="o in graphSubjectOptions" :key="o.value" :label="o.label" :value="o.value" />
-        </el-select>
-        <Route class="mx-1 h-4 w-4 text-slate-300" />
-        <label class="text-xs text-slate-500">资源</label>
-        <el-select v-model="graphInput.resourceType" size="small" style="width: 150px">
+        <Network class="h-4 w-4 text-indigo-500" />
+        <el-select v-model="filters.resourceType" size="small" style="width: 150px" placeholder="资源类型" clearable>
           <el-option v-for="o in RESOURCE_TYPES" :key="o.value" :label="o.label" :value="o.value" />
         </el-select>
-        <el-select
-          v-model="graphInput.resourceId"
-          filterable
-          clearable
-          size="small"
-          style="width: 240px"
-          :placeholder="graphResourceOptions.length ? '选择或搜索资源…' : '请先选择资源类型'"
-          :loading="optionLoading.resource"
-        >
-          <el-option v-for="o in graphResourceOptions" :key="o.value" :label="o.label" :value="o.value" />
+        <el-select v-model="filters.relation" size="small" style="width: 160px" placeholder="关系" clearable>
+          <el-option v-for="o in RELATIONS" :key="o.value" :label="o.label" :value="o.value" />
         </el-select>
-        <el-button size="small" type="primary" :icon="Route" @click="runPath">渲染关系路径</el-button>
+        <el-select v-model="filters.subjectType" size="small" style="width: 150px" placeholder="主体类型" clearable>
+          <el-option v-for="o in SUBJECT_TYPES" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
+        <span class="text-xs text-slate-400">
+          图谱随筛选实时联动（当前 {{ graphNodes.length }} 节点 / {{ graphLinks.length }} 边）
+        </span>
       </div>
 
-      <GraphView
-        :subject="graphData.subject"
-        :resource="graphData.resource"
-        :found="graphData.found"
-        :edges="graphData.edges"
-      />
+      <!-- 有向图谱：节点=资源/主体，边=关系 -->
+      <GraphView :nodes="graphNodes" :links="graphLinks" />
+      <div v-if="!graphNodes.length" class="rounded-lg border border-dashed border-slate-200 py-10 text-center text-xs text-slate-400">
+        当前筛选下没有元组，请调整上方筛选条件
+      </div>
     </section>
 
-    <!-- 新增/编辑元组弹窗 -->
-    <el-dialog v-model="dialogVisible" :title="editingTupleId ? '编辑关系元组' : '新增关系元组'" width="480px">
+    <!-- 新增/编辑元组弹窗（God-Mode，带安全护栏） -->
+    <el-dialog v-model="dialogVisible" :title="editingTupleId ? '编辑关系元组' : '新增关系元组'" width="520px">
+      <!-- 安全警告：仅新增模式展示 -->
+      <el-alert
+        v-if="!editingTupleId"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="mb-4 border-amber-200 bg-amber-50"
+      >
+        <template #title>
+          <span class="text-xs font-semibold text-amber-700">⚠️ 安全警告：手工新增元组属于超级管理员越权操作</span>
+        </template>
+        <p class="text-xs leading-relaxed text-amber-700/90">
+          Warning: Manual tuple creation is a super-admin override.
+          Normal business relations (like project ownership) are handled automatically by the system.
+        </p>
+      </el-alert>
+
       <el-form label-width="110px">
         <el-form-item label="资源类型" required>
           <el-select v-model="tupleForm.resourceType" style="width: 100%">
@@ -602,27 +671,31 @@ const runPath = async () => {
             <el-option v-for="o in RELATIONS" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="主体类型" required>
-          <el-select v-model="tupleForm.subjectType" style="width: 100%">
-            <el-option v-for="o in SUBJECT_TYPES" :key="o.value" :label="o.label" :value="o.value" />
-          </el-select>
-        </el-form-item>
+
+        <!-- 主体：使用通用 SubjectPicker 选择 -->
         <el-form-item label="主体" required>
-          <el-select
-            v-model="tupleForm.subjectId"
-            filterable
-            clearable
-            style="width: 100%"
-            :placeholder="subjectOptions.length ? '选择或搜索主体…' : '请先选择主体类型'"
-          >
-            <el-option
-              v-for="o in subjectOptions"
-              :key="o.value"
-              :label="o.label"
-              :value="o.value"
+          <div class="flex w-full flex-wrap items-center gap-2">
+            <template v-if="tupleForm.subjectId">
+              <span class="inline-flex items-center gap-1.5 rounded-md bg-blue-50 px-2 py-1 text-xs ring-1 ring-inset ring-blue-600/10">
+                <span>{{ subjectBadge(tupleForm.subjectType, tupleForm.subjectId).icon }}</span>
+                <span class="text-slate-500">{{ subjectBadge(tupleForm.subjectType, tupleForm.subjectId).zh }}:</span>
+                <span class="font-semibold text-blue-700">{{ subjectBadge(tupleForm.subjectType, tupleForm.subjectId).name }}</span>
+                <span class="text-[10px] text-slate-400">({{ subjectBadge(tupleForm.subjectType, tupleForm.subjectId).id }})</span>
+                <span v-if="tupleForm.subjectRelation" class="rounded bg-slate-100 px-1 py-0.5 text-[10px] text-slate-500">
+                  #{{ tupleForm.subjectRelation }}
+                </span>
+              </span>
+            </template>
+            <el-button size="small" :icon="UserRound" @click="pickerVisible = true">
+              {{ tupleForm.subjectId ? '重新选择主体' : '选择主体' }}
+            </el-button>
+            <SubjectPicker
+              v-model="pickerVisible"
+              @select="onPickSubject"
             />
-          </el-select>
+          </div>
         </el-form-item>
+
         <el-form-item label="主体嵌套关系">
           <el-input v-model="tupleForm.subjectRelation" placeholder="用户集时填，如 member；否则留空" />
         </el-form-item>
