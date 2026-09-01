@@ -51,6 +51,24 @@ const relationLabel = (v) => RELATIONS.find((o) => o.value === v)?.label || v
 /** 主体类型中文 label 快捷查找 */
 const subjectTypeLabel = (v) => SUBJECT_TYPES.find((o) => o.value === v)?.label || v
 
+/**
+ * 根据 (resourceType, resourceId) 查资源名称。
+ * 优先走预热缓存，找不到时回退到 #id 显示，保证不会出现空白。
+ */
+const resourceName = (type, id) => {
+  if (id == null) return '-'
+  const strId = String(id)
+  const opt = (resourceCache.value[type] || []).find((o) => o.value === strId)
+  return opt ? opt.label : `#${id}`
+}
+/** 根据 (subjectType, subjectId) 查主体名称，同上 */
+const subjectName = (type, id) => {
+  if (id == null) return '-'
+  const strId = String(id)
+  const opt = (subjectCache.value[type] || []).find((o) => o.value === strId)
+  return opt ? opt.label : `#${id}`
+}
+
 // 元组列表
 const tuples = ref([])
 
@@ -177,13 +195,22 @@ const loadSubjectOptions = async (type) => {
 
 /** 预加载项目/团队候选（供快捷授权下拉），并预热抽屉缓存 */
 const loadQuickLookup = async () => {
-  const [p, t, u] = await Promise.all([fetchProjects({}), fetchTeams(), fetchUsers({})])
+  const [p, t, u, r] = await Promise.all([
+    fetchProjects({}), fetchTeams(), fetchUsers({}), fetchReports({})
+  ])
   projects.value = (p.data || p || [])
   teams.value = (t.data || t || [])
   const users = (u.data || u || [])
+  const reports = (r.data || r || [])
   // 同时写入缓存（抽屉首次打开 / 拓扑图切换就不用再查一次）
   resourceCache.value.project = projects.value.map((p) => ({
     value: String(p.id), label: `Project #${p.id}: ${p.name}`
+  }))
+  resourceCache.value.team = teams.value.map((t) => ({
+    value: String(t.id), label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`
+  }))
+  resourceCache.value.report = reports.map((r) => ({
+    value: String(r.id), label: `Report #${r.id}: ${r.name}`
   }))
   subjectCache.value.team = teams.value.map((t) => ({
     value: String(t.id), label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`
@@ -467,7 +494,9 @@ const runPath = async () => {
               <span class="text-sm text-slate-700">{{ resourceTypeLabel(row.resourceType) }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="resourceId" label="资源 ID" width="90" />
+          <el-table-column label="资源" min-width="260">
+            <template #default="{ row }">{{ resourceName(row.resourceType, row.resourceId) }}</template>
+          </el-table-column>
           <el-table-column label="关系" width="160">
             <template #default="{ row }">
               <span class="text-sm text-indigo-700">{{ relationLabel(row.relation) }}</span>
@@ -478,13 +507,10 @@ const runPath = async () => {
               <span class="text-sm text-slate-700">{{ subjectTypeLabel(row.subjectType) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="主体 ID" width="90">
-            <template #default="{ row }">{{ row.subjectId }}</template>
-          </el-table-column>
-          <el-table-column label="主体子关系" min-width="110">
+          <el-table-column label="主体" min-width="240">
             <template #default="{ row }">
-              <span v-if="row.subjectRelation" class="text-xs text-slate-600">#{{ row.subjectRelation }}</span>
-              <span v-else class="text-xs text-slate-300">—</span>
+              <span>{{ subjectName(row.subjectType, row.subjectId) }}</span>
+              <span v-if="row.subjectRelation" class="ml-1 text-xs text-slate-400">#{{ row.subjectRelation }}</span>
             </template>
           </el-table-column>
           <el-table-column label="创建时间" min-width="170">

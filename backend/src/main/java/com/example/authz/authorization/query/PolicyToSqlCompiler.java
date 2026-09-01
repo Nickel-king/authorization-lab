@@ -353,9 +353,9 @@ public class PolicyToSqlCompiler {
                 + "AND t.resource_id = CAST(" + resource + ".id AS VARCHAR) "
                 + "AND t.relation = " + relPlaceholder + " "
                 + "AND ( "
-                // 直接授权：主语即该用户
+                // 直接授权：主语即该用户（subject_relation 为 NULL 或空字符串都算直接授权）
                 + "(t.subject_type = 'user' AND t.subject_id = " + uidPlaceholder + " "
-                + "AND t.subject_relation IS NULL) "
+                + "AND (t.subject_relation IS NULL OR t.subject_relation = '')) "
                 + "OR "
                 // 团队 Userset：主语的团队是 member，且该团队确实包含该用户
                 + "(t.subject_type = '" + teamType + "' "
@@ -365,7 +365,7 @@ public class PolicyToSqlCompiler {
                 + "AND tm.resource_id = t.subject_id "
                 + "AND tm.relation = '" + memberRel + "' "
                 + "AND tm.subject_type = 'user' AND tm.subject_id = " + uidPlaceholder + " "
-                + "AND tm.subject_relation IS NULL)) "
+                + "AND (tm.subject_relation IS NULL OR tm.subject_relation = ''))) "
                 + "))";
     }
 
