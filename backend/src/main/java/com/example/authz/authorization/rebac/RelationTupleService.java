@@ -58,6 +58,24 @@ public interface RelationTupleService {
     void deleteTuple(Long id);
 
     /**
+     * 按可选条件批量删除关系元组（资源删除后的级联清理用）。
+     * <p>
+     * 至少需指定一个非空条件，防止误删全表。
+     *
+     * @param subjectType  主体类型（可选）
+     * @param subjectId    主体 ID（可选）
+     * @param resourceType 资源类型（可选）
+     * @param resourceId   资源 ID（可选）
+     * @return 删除的元组数量
+     */
+    int deleteTuples(
+            String subjectType,
+            String subjectId,
+            String resourceType,
+            String resourceId
+    );
+
+    /**
      * 推导从主体到资源的有向关系链。
      *
      * @param subjectType  起始主体类型，如 user

@@ -150,6 +150,45 @@ public class RelationTupleServiceImpl
      * {@inheritDoc}
      */
     @Override
+    public int deleteTuples(
+            String subjectType,
+            String subjectId,
+            String resourceType,
+            String resourceId
+    ) {
+
+        // 任意条件为空时跳过；至少需一个非空条件，防止空 Wrapper 误删全表
+        LambdaQueryWrapper<RelationTuple> wrapper =
+                new LambdaQueryWrapper<>();
+        boolean hasCondition = false;
+        if (StringUtils.hasText(subjectType)) {
+            wrapper.eq(RelationTuple::getSubjectType, subjectType);
+            hasCondition = true;
+        }
+        if (StringUtils.hasText(subjectId)) {
+            wrapper.eq(RelationTuple::getSubjectId, subjectId);
+            hasCondition = true;
+        }
+        if (StringUtils.hasText(resourceType)) {
+            wrapper.eq(RelationTuple::getResourceType, resourceType);
+            hasCondition = true;
+        }
+        if (StringUtils.hasText(resourceId)) {
+            wrapper.eq(RelationTuple::getResourceId, resourceId);
+            hasCondition = true;
+        }
+        if (!hasCondition) {
+            throw new IllegalArgumentException(
+                    "批量删除元组至少需要指定一个条件");
+        }
+
+        return tupleMapper.delete(wrapper);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public RelationPathVO findPath(
             String subjectType,
             String subjectId,

@@ -202,6 +202,21 @@ public class ProjectController {
         return ApiResponse.success(decision);
     }
 
+    /**
+     * 删除项目。
+     * <p>
+     * 委托 {@link ProjectService#deleteProject}，删除时发布领域事件，
+     * 由授权层监听器自动清理相关 ReBAC 关系元组。
+     *
+     * @param id 项目 ID
+     * @return 操作成功
+     */
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(@PathVariable Long id) {
+        projectService.deleteProject(id);
+        return ApiResponse.success();
+    }
+
     // ==================== 诊断端点（临时，排查完毕后删除） ====================
 
     /**

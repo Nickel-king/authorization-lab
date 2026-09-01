@@ -6,6 +6,7 @@ import com.example.authz.authorization.rebac.RelationTupleService;
 import com.example.authz.authorization.rebac.dto.RelationTupleCreateDTO;
 import com.example.authz.authorization.rebac.entity.RelationTuple;
 import com.example.authz.common.enums.ResourceTypeEnum;
+import com.example.authz.common.event.ResourceDeletedEvent;
 import com.example.authz.department.entity.Department;
 import com.example.authz.department.service.DepartmentService;
 import com.example.authz.team.dto.TeamMemberAddDTO;
@@ -17,6 +18,7 @@ import com.example.authz.team.service.TeamService;
 import com.example.authz.user.entity.User;
 import com.example.authz.user.service.UserService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -78,6 +80,9 @@ public class TeamServiceImpl
 
     /** ReBAC 关系元组服务：团队成员关系全部存储于元组表（取代原 TeamMember） */
     private final RelationTupleService relationTupleService;
+
+    /** 应用事件发布器：删除团队时发布领域事件，触发授权层元组清理 */
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * {@inheritDoc}
@@ -197,14 +202,12 @@ public class TeamServiceImpl
             throw new IllegalArgumentException("团队不存在: id=" + id);
         }
 
-        // 2. 清理该团队作为资源的成员/组长元组（auth_relation_tuple 无外键，需手动删除）
-        List<RelationTuple> tuples =
-                relationTupleService.listTuples(null, null, RESOURCE_TYPE_TEAM, String.valueOf(id));
-        for (RelationTuple tuple : tuples) {
-            if (MEMBER_RELATIONS.contains(tuple.getRelation())) {
-                relationTupleService.deleteTuple(tuple.getId());
-            }
-        }
+        // 2. 发布资源删除领域事件，由授权层 RelationTupleCleanupListener
+        //    同事务清理该团队的 ReBAC 关系元组（业务层不再直接操作元组表）
+        eventPublisher.publishEvent(new ResourceDeletedEvent(
+                ResourceTypeEnum.TEAM.getValue(),
+                String.valueOf(id)
+        ));
 
         // 3. 删除团队本体
         removeById(id);

@@ -17,4 +17,15 @@ import com.example.authz.project.entity.Project;
  * @since 2026-08-29
  */
 public interface ProjectService extends IService<Project> {
+
+    /**
+     * 删除项目。
+     * <p>
+     * 业务层不直接操作 ReBAC 元组表：删除时发布
+     * {@link com.example.authz.common.event.ResourceDeletedEvent}，
+     * 由授权层监听器自动清理与该项目相关的全部关系元组。
+     *
+     * @param id 项目主键
+     */
+    void deleteProject(Long id);
 }
