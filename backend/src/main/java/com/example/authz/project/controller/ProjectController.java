@@ -62,34 +62,31 @@ public class ProjectController {
      */
     @GetMapping
     public ApiResponse<Map<String, Object>> list(
-            @RequestParam(required = false) Long currentUserId
+            @RequestParam(required = false) Long currentUserId,
+            @RequestParam(required = false, defaultValue = "false") boolean skipDataScope
     ) {
 
-        // 未显式指定用户时，默认以 1 号用户测试（与既有接口保持一致）
         Long userId = currentUserId != null ? currentUserId : 1L;
 
-        // 1. 由授权策略生成当前用户的数据权限 SQL 条件（列表场景用 read 操作）
-        SqlFilterResult filter = dataScopeService.getSqlFilter(
-                userId, "project", "read");
-
-        // 2. 将生成的 SQL 条件注入 ORM 查询构造器。
-        // 注意：PolicyToSqlCompiler 输出的 {n} 占位符 = MyBatis-Plus apply() 的标准语法，
-        // 直接把 filter.sql() + filter.params() 传给 wrapper.apply() 即可，无需转换。
         QueryWrapper<Project> wrapper = new QueryWrapper<>();
-        if (filter.params().isEmpty()) {
-            wrapper.apply(filter.sql());
-        } else {
-            wrapper.apply(filter.sql(), filter.params().toArray());
+        SqlFilterResult filter = null;
+        if (!skipDataScope) {
+            // 正常流程：由授权策略生成数据权限 SQL 条件（列表场景用 read 操作）
+            filter = dataScopeService.getSqlFilter(userId, "project", "read");
+            if (filter.params().isEmpty()) {
+                wrapper.apply(filter.sql());
+            } else {
+                wrapper.apply(filter.sql(), filter.params().toArray());
+            }
         }
 
         List<Project> list = projectService.list(wrapper);
 
-        Map<String, Object> result = Map.of(
-                "userId", userId,
-                "appliedSqlFilter", filter.displaySql(),
-                "count", list.size(),
-                "data", list
-        );
+        Map<String, Object> result = new HashMap<>();
+        result.put("userId", userId);
+        result.put("appliedSqlFilter", filter != null ? filter.displaySql() : "(跳过数据权限过滤)");
+        result.put("count", list.size());
+        result.put("data", list);
 
         return ApiResponse.success(result);
     }

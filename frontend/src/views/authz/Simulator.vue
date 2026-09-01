@@ -32,10 +32,11 @@ const loading = ref(false)
 onMounted(async () => {
   const [u, p] = await Promise.all([
     fetchUsers(),
-    fetchProjects()
+    fetchProjects({ skipDataScope: true })
   ])
   users.value = u || []
-  projects.value = p.data || p || []
+  // http 拦截器已解包 ApiResponse，p = { data: [...], count, ... }
+  projects.value = Array.isArray(p?.data) ? p.data : Array.isArray(p) ? p : []
 
   const qId = route.query.userId
   if (qId) {
