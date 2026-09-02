@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import AdminLayout from '@/layouts/AdminLayout.vue'
 
-// 前端路由表：7 个授权治理菜单页统一挂载于 AdminLayout 下
+// 前端路由表：6 个授权治理菜单页统一挂载于 AdminLayout 下
 const routes = [
   {
     path: '/',
@@ -37,12 +37,6 @@ const routes = [
         name: 'policies',
         component: () => import('@/views/authz/Policies.vue'),
         meta: { title: '细粒度策略中心' }
-      },
-      {
-        path: 'authz/relations',
-        name: 'relations',
-        component: () => import('@/views/authz/Relations.vue'),
-        meta: { title: '协作与关系图谱' }
       },
       {
         path: 'authz/simulator',

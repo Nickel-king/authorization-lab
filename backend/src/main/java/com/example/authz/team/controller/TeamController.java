@@ -76,7 +76,7 @@ public class TeamController {
     }
 
     /**
-     * 删除团队（级联清除成员记录与 member 元组）。
+     * 删除团队（级联清除 sys_team_member 成员记录）。
      *
      * @param id 团队主键
      * @return 空响应
@@ -95,14 +95,14 @@ public class TeamController {
      */
     @GetMapping("/{id}/members")
     public ApiResponse<List<TeamMemberVO>> members(@PathVariable Long id) {
-        return ApiResponse.success(teamService.listMembers(id));
+        return ApiResponse.success(teamService.getTeamMembers(id));
     }
 
     /**
-     * 批量添加团队成员，并同步注入 member 关系元组。
+     * 批量添加团队成员，写入 sys_team_member。
      *
      * @param id  团队主键
-     * @param dto 成员 userIds 与关系名
+     * @param dto 成员 userIds 与角色
      * @return 空响应
      */
     @PostMapping("/{id}/members")
@@ -110,12 +110,12 @@ public class TeamController {
             @PathVariable Long id,
             @RequestBody TeamMemberAddDTO dto
     ) {
-        teamService.addMembers(id, dto);
+        teamService.addMember(id, dto);
         return ApiResponse.success();
     }
 
     /**
-     * 移除团队成员，并同步删除 member 关系元组。
+     * 移除团队成员（删除 sys_team_member 记录）。
      *
      * @param id     团队主键
      * @param userId 用户主键

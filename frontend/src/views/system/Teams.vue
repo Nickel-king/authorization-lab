@@ -156,12 +156,12 @@ const submitTeam = async () => {
   if (target) await selectTeam(target)
 }
 
-// 删除团队（级联解除成员记录与元组）
+// 删除团队（级联清除 sys_team_member 成员记录）
 const onDeleteTeam = async () => {
   const t = selectedTeam.value
   if (!t) return
   await ElMessageBox.confirm(
-    `删除团队「${t.name}」将级联解除其全部成员的协作与关系元组，且不可恢复，确定继续？`,
+    `删除团队「${t.name}」将级联清除其全部成员记录，且不可恢复，确定继续？`,
     '删除确认',
     { type: 'warning' }
   )

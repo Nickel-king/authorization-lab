@@ -1,12 +1,10 @@
 <script setup>
 // 科研项目管理工作台（/workspace/projects）
 // 顶部身份切换 + SQL 过滤看板 + 项目表格（编辑按钮按 PDP 动态控制）
-// 协作授权统一走通用 ReBAC 抽屉（ResourceAccessDrawer），不感知具体协作端点
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Eye, Pencil, Users2, Plus } from 'lucide-vue-next'
+import { Eye, Pencil, Plus } from 'lucide-vue-next'
 import SqlPreview from '@/components/SqlPreview.vue'
-import ResourceAccessDrawer from '@/components/ResourceAccessDrawer.vue'
 import { fetchProjects, createProject, fetchUsers, fetchProject, updateProject } from '@/api/user'
 import { checkAuthorization } from '@/api/authorization'
 
@@ -20,10 +18,6 @@ const sqlFilter = ref('')
 
 // 行级按钮权限缓存
 const perms = ref(new Map())
-
-// 通用访问授权抽屉状态（当前选中的项目）
-const accessVisible = ref(false)
-const accessProject = ref(null)
 
 // -------- 弹窗：新建 / 编辑 --------
 /** 当前是否为编辑模式（null = 新增，数字 = 编辑中的项目 ID） */
@@ -82,17 +76,6 @@ const checkPerm = async (projectId, action) => {
 
 // 编辑按钮禁用态
 const editDisabled = (row) => !(perms.value.get(`${currentUserId.value}-${row.id}-update`) ?? false)
-
-// 打开通用访问授权抽屉（选中当前项目）
-const openAccessDrawer = (row) => {
-  accessProject.value = row
-  accessVisible.value = true
-}
-
-// 抽屉数据变动后刷新项目列表（元组变化可能影响行级可见性）
-const onAccessChanged = async () => {
-  await loadProjects()
-}
 
 // 打开新建项目弹窗
 const openCreate = () => {
@@ -194,28 +177,16 @@ const submitForm = async () => {
           <template #default="{ row }">{{ ownerName(row.ownerId) }}</template>
         </el-table-column>
         <el-table-column prop="createdAt" label="创建时间" width="180" />
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
             <el-button size="small" :icon="Eye" text @click="openDetail(row)">查看详情</el-button>
             <el-tooltip :disabled="!editDisabled(row)" content="无权限修改本项目" placement="top">
               <el-button size="small" :icon="Pencil" text type="primary" :disabled="editDisabled(row)" @click="openEdit(row)">编辑</el-button>
             </el-tooltip>
-            <el-button size="small" :icon="Users2" text type="warning" @click="openAccessDrawer(row)">
-              访问授权
-            </el-button>
           </template>
         </el-table-column>
       </el-table>
     </div>
-
-    <!-- 通用访问授权抽屉（ReBAC）：直接授权用户/团队，自动穿透团队继承成员 -->
-    <ResourceAccessDrawer
-      v-model="accessVisible"
-      resource-type="project"
-      :resource-id="accessProject?.id"
-      :resource-name="accessProject?.name"
-      @changed="onAccessChanged"
-    />
 
     <!-- 新建 / 编辑 项目弹窗 -->
     <el-dialog

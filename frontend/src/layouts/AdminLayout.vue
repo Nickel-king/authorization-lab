@@ -4,7 +4,6 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   SlidersHorizontal,
-  Network,
   FlaskConical,
   Users,
   FolderKanban,
@@ -34,7 +33,6 @@ const menuGroups = [
     group: '统一授权与决策引擎',
     items: [
       { icon: SlidersHorizontal, label: '细粒度策略中心', path: '/authz/policies' },
-      { icon: Network, label: '协作图谱与关系元组', path: '/authz/relations' },
       { icon: FlaskConical, label: '授权模拟与决策解释', path: '/authz/simulator' }
     ]
   },

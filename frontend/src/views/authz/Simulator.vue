@@ -5,16 +5,13 @@ import { useRoute } from 'vue-router'
 import {
   Zap,
   ChevronDown,
-  Network,
   CheckCircle2,
   XCircle,
   GitBranch
 } from 'lucide-vue-next'
 import StatusBadge from '@/components/StatusBadge.vue'
 import SqlPreview from '@/components/SqlPreview.vue'
-import GraphView from '@/components/GraphView.vue'
 import { runSimulator } from '@/api/authorization'
-import { fetchPath } from '@/api/relation'
 import { fetchUsers, fetchProjects } from '@/api/user'
 
 // 读取路由 query（支持从“用户管理-以该身份模拟”带入用户 ID）
@@ -56,15 +53,11 @@ onMounted(async () => {
   }
 })
 
-// 运行授权决策模拟
+// 运行授权决策模拟（纯 ABAC 属性比较，决策轨迹直接来自策略评估，无需额外图推导）
 const run = async () => {
   loading.value = true
   try {
     result.value = await runSimulator(request.value)
-    // 预加载命中的 HAS_RELATION 条件对应的关系通路，供拓扑图展示
-    for (const pt of result.value?.decision?.evaluatedPolicies || []) {
-      ensureGraphs(pt)
-    }
   } finally {
     loading.value = false
   }
@@ -92,9 +85,6 @@ const toggleExpand = (code) => {
     set.delete(code)
   } else {
     set.add(code)
-    // 展开时若存在命中的 HAS_RELATION 条件，立即触发关系通路加载
-    const pt = result.value?.decision?.evaluatedPolicies?.find((p) => p.policyCode === code)
-    if (pt) ensureGraphs(pt)
   }
   expandedPolicies.value = set
 }
@@ -110,7 +100,6 @@ const operatorLabel = {
   EQUALS: '=',
   NOT_EQUALS: '≠',
   IN: '∈',
-  HAS_RELATION: '具有关系',
   CONTAINS: '包含',
   STARTS_WITH: '前缀匹配',
   ENDS_WITH: '后缀匹配'
@@ -129,59 +118,11 @@ const flattenTraces = (traces, depth = 0, out = []) => {
   return out
 }
 
-// 生成条件的可读描述（如 “主体是资源的「collaborator」”）
+// 生成条件的可读描述（如 “操作人的 department = 'computer'”）
 const describeCondition = (t) => {
   if (t.logicalOperator) return `逻辑分组 ${t.logicalOperator}`
   const op = operatorLabel[t.operator] || t.operator
-  if (t.operator === 'HAS_RELATION') {
-    const rel = String(t.rightActualValue ?? t.rightExpression ?? '')
-      .replace(/^['"]|['"]$/g, '')
-    return `主体是资源的「${rel}」`
-  }
   return `${t.leftExpression} ${op} ${t.rightActualValue ?? t.rightExpression}`
-}
-
-// 某策略下全部“已命中”的 HAS_RELATION 叶子条件（用于关系通路拓扑图）
-const hasRelationLeaves = (pt) => {
-  return flattenTraces(pt.conditionTraces)
-    .filter((r) => r.kind === 'leaf' && r.trace.operator === 'HAS_RELATION' && r.trace.matched)
-    .map((r, i) => ({ ...r, graphKey: `${pt.policyCode}#${i}` }))
-}
-
-// ==================== 关系通路拓扑图（HAS_RELATION 可视化） ====================
-
-// key -> { subject, resource, found, edges, loading }
-const graphPaths = ref({})
-
-// 懒加载当前请求主体→资源的关系通路
-const ensureGraphs = async (pt) => {
-  for (const leaf of hasRelationLeaves(pt)) {
-    if (graphPaths.value[leaf.graphKey]) continue
-    graphPaths.value[leaf.graphKey] = {
-      loading: true,
-      found: false,
-      subject: '',
-      resource: '',
-      edges: []
-    }
-    try {
-      const res = await fetchPath({
-        subjectType: 'user',
-        subjectId: request.value.userId,
-        resourceType: request.value.resource,
-        resourceId: request.value.resourceId
-      })
-      graphPaths.value[leaf.graphKey] = { loading: false, ...res }
-    } catch (e) {
-      graphPaths.value[leaf.graphKey] = {
-        loading: false,
-        found: false,
-        subject: '',
-        resource: '',
-        edges: []
-      }
-    }
-  }
 }
 </script>
 
@@ -384,29 +325,6 @@ const ensureGraphs = async (pt) => {
                       </span>
                       <StatusBadge :type="row.trace.matched ? 'ALLOW' : 'DENY'" :text="row.trace.matched ? 'True' : 'False'" />
                     </template>
-                  </div>
-
-                  <!-- 命中的 HAS_RELATION 条件 → 关系通路拓扑图 -->
-                  <div v-if="hasRelationLeaves(pt).length" class="mt-1 border-t border-slate-200 pt-2">
-                    <div class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-600">
-                      <Network class="h-3.5 w-3.5 text-indigo-500" />
-                      关系通路（HAS_RELATION 可视化）
-                    </div>
-                    <div v-for="leaf in hasRelationLeaves(pt)" :key="leaf.graphKey" class="mb-2">
-                      <div
-                        v-if="graphPaths[leaf.graphKey]?.loading"
-                        class="flex h-24 items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-400"
-                      >
-                        正在推导关系通路…
-                      </div>
-                      <GraphView
-                        v-else-if="graphPaths[leaf.graphKey]"
-                        :subject="`user:${request.userId}`"
-                        :resource="`${request.resource}:${request.resourceId}`"
-                        :found="graphPaths[leaf.graphKey].found"
-                        :edges="graphPaths[leaf.graphKey].edges"
-                      />
-                    </div>
                   </div>
                 </div>
               </el-timeline-item>

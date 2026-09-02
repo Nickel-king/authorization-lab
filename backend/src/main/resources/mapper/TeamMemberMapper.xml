@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.authz.team.mapper.TeamMemberMapper">
+
+    <!-- 实体列映射：role <-> team_role、createTime <-> created_at 显式声明 -->
+    <resultMap id="TeamMemberMap" type="com.example.authz.team.entity.TeamMember">
+        <id property="id" column="id"/>
+        <result property="teamId" column="team_id"/>
+        <result property="userId" column="user_id"/>
+        <result property="role" column="team_role"/>
+        <result property="createTime" column="created_at"/>
+    </resultMap>
+
+    <!--
+        查询某团队全部成员，JOIN sys_user 一次性拉取姓名/用户名/部门，
+        并按加入时间倒序返回（标准关系映射替代内存拼接）。
+    -->
+    <select id="selectMembersByTeamId" resultType="com.example.authz.team.dto.TeamMemberVO">
+        SELECT tm.user_id         AS userId,
+               u.display_name     AS displayName,
+               u.username         AS username,
+               u.department       AS department,
+               tm.team_role       AS teamRole,
+               (tm.team_role = 'leader') AS isLeader,
+               tm.created_at      AS createdAt
+        FROM sys_team_member tm
+        LEFT JOIN sys_user u ON u.id = tm.user_id
+        WHERE tm.team_id = #{teamId}
+        ORDER BY tm.created_at DESC
+    </select>
+
+</mapper>

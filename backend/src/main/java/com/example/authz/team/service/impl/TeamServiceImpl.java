@@ -12,8 +12,6 @@ import com.example.authz.team.entity.TeamMember;
 import com.example.authz.team.mapper.TeamMapper;
 import com.example.authz.team.mapper.TeamMemberMapper;
 import com.example.authz.team.service.TeamService;
-import com.example.authz.user.entity.User;
-import com.example.authz.user.service.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,15 +23,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
  * 团队（Team）服务实现。
  * <p>
  * 基于 {@link ServiceImpl} + {@link TeamMapper} 提供团队基础 CRUD，
- * 团队成员关系存于组织成员表（sys_team_member），角色（member / leader）
- * 由 team_role 列单条承载，一用户一团队仅一条记录，不再依赖任何授权关系元组。
+ * 团队成员关系存于组织成员表（sys_team_member），通过
+ * {@link TeamMemberMapper} 标准关系映射（实体 + Mapper XML）读写，
+ * 角色（member / leader）由 team_role 列单条承载，不再依赖任何授权元组表。
  *
  * @author Nickel
  * @since 2026-08-29
@@ -52,13 +50,10 @@ public class TeamServiceImpl
     private static final Set<String> MEMBER_RELATIONS =
             Set.of(RELATION_MEMBER, RELATION_LEADER);
 
-    /** 用户服务：解析成员的主体信息 */
-    private final UserService userService;
-
     /** 部门服务：解析团队关联部门名称 */
     private final DepartmentService departmentService;
 
-    /** 团队成员表 Mapper：成员关系全部存于 sys_team_member */
+    /** 团队成员表 Mapper：标准 CRUD 读写 sys_team_member */
     private final TeamMemberMapper teamMemberMapper;
 
     /**
@@ -169,40 +164,13 @@ public class TeamServiceImpl
     }
 
     /**
-     * 解析团队成员清单。
-     *
-     * @param teamId 团队主键
-     * @return 成员视图对象列表
+     * {@inheritDoc}
      */
     @Override
-    public List<TeamMemberVO> listMembers(Long teamId) {
+    public List<TeamMemberVO> getTeamMembers(Long teamId) {
 
-        // 1. 查询该团队的全部成员记录（按加入时间倒序）
-        List<TeamMember> members = teamMemberMapper.selectList(
-                new LambdaQueryWrapper<TeamMember>()
-                        .eq(TeamMember::getTeamId, teamId)
-                        .orderByDesc(TeamMember::getCreatedAt));
-
-        // 2. 拼接用户主体信息，供成员姓名/用户名/部门展示
-        Map<Long, User> userById = userService.list().stream()
-                .collect(Collectors.toMap(User::getId, Function.identity(), (a, b) -> a));
-
-        // 3. 组装 VO：teamRole 直接来自成员记录，isLeader 由角色推导
-        List<TeamMemberVO> result = new ArrayList<>();
-        for (TeamMember member : members) {
-            Long userId = member.getUserId();
-            User user = userById.get(userId);
-            TeamMemberVO vo = new TeamMemberVO();
-            vo.setUserId(userId);
-            vo.setDisplayName(user != null ? user.getDisplayName() : "用户#" + userId);
-            vo.setUsername(user != null ? user.getUsername() : "-");
-            vo.setDepartment(user != null ? user.getDepartment() : null);
-            vo.setTeamRole(member.getTeamRole());
-            vo.setIsLeader(RELATION_LEADER.equals(member.getTeamRole()));
-            vo.setCreatedAt(member.getCreatedAt());
-            result.add(vo);
-        }
-        return result;
+        // 基于标准关系映射（TeamMemberMapper.xml JOIN sys_user）一次性查出成员清单
+        return teamMemberMapper.selectMembersByTeamId(teamId);
     }
 
     /**
@@ -210,7 +178,7 @@ public class TeamServiceImpl
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void addMembers(Long teamId, TeamMemberAddDTO dto) {
+    public void addMember(Long teamId, TeamMemberAddDTO dto) {
 
         // 1. 校验团队存在
         if (getById(teamId) == null) {
@@ -220,14 +188,14 @@ public class TeamServiceImpl
             throw new IllegalArgumentException("请选择需要加入团队的用户");
         }
 
-        // 2. 关系名默认 member，并校验只允许 member / leader
+        // 2. 角色默认 member，并校验只允许 member / leader
         String role = StringUtils.hasText(dto.getRelation())
                 ? dto.getRelation() : RELATION_MEMBER;
         if (!MEMBER_RELATIONS.contains(role)) {
-            throw new IllegalArgumentException("非法的成员关系: " + role);
+            throw new IllegalArgumentException("非法的成员角色: " + role);
         }
 
-        // 3. 去重后逐个加入：已存在记录仅做角色升级（member -> leader），否则新增
+        // 3. 去重后逐个写入 sys_team_member：已存在记录仅做角色升级（member -> leader）
         List<Long> distinctUserIds = dto.getUserIds().stream()
                 .filter(Objects::nonNull).distinct().collect(Collectors.toList());
         for (Long userId : distinctUserIds) {
@@ -236,11 +204,11 @@ public class TeamServiceImpl
                 TeamMember member = new TeamMember();
                 member.setTeamId(teamId);
                 member.setUserId(userId);
-                member.setTeamRole(role);
+                member.setRole(role);
                 teamMemberMapper.insert(member);
             } else if (RELATION_LEADER.equals(role)
-                    && !RELATION_LEADER.equals(existing.getTeamRole())) {
-                existing.setTeamRole(RELATION_LEADER);
+                    && !RELATION_LEADER.equals(existing.getRole())) {
+                existing.setRole(RELATION_LEADER);
                 teamMemberMapper.updateById(existing);
             }
         }
@@ -278,7 +246,7 @@ public class TeamServiceImpl
         }
 
         // 3. 更新角色（member / leader 互斥，单条记录承载）
-        member.setTeamRole(role);
+        member.setRole(role);
         teamMemberMapper.updateById(member);
     }
 

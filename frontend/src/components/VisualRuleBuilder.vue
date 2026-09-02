@@ -26,13 +26,12 @@ const SOURCES = [
   { label: '环境 CONTEXT', value: 'CONTEXT' }
 ]
 
-// 算子选项
+// 算子选项（纯 ABAC 属性比较，不含任何关系类算子）
 const OPERATORS = [
   { label: 'EQUALS 等于', value: 'EQUALS' },
   { label: 'NOT_EQUALS 不等于', value: 'NOT_EQUALS' },
   { label: 'CONTAINS 包含', value: 'CONTAINS' },
-  { label: 'IN 属于', value: 'IN' },
-  { label: 'HAS_RELATION 具备关系', value: 'HAS_RELATION' }
+  { label: 'IN 属于', value: 'IN' }
 ]
 
 // 右值类型候选（与后端 PolicyCondition.valueSource 一致）
@@ -75,8 +74,7 @@ const OPERATOR_LABELS = {
   EQUALS: '等于',
   NOT_EQUALS: '不等于',
   CONTAINS: '包含',
-  IN: '属于',
-  HAS_RELATION: '具备关系'
+  IN: '属于'
 }
 
 /**
@@ -110,12 +108,6 @@ const translateCondition = (row) => {
   const src = SOURCE_LABELS[row.attributeSource] || row.attributeSource
   // 算子中文释义
   const op = OPERATOR_LABELS[row.operator] || row.operator
-
-  // 语义特例：HAS_RELATION 只关心"主语 具备关系 '值'"，无需拼接左值属性路径
-  if (row.operator === 'HAS_RELATION') {
-    const v = row.value ? `'${row.value}'` : '『未填写』'
-    return `${src} ${op} ${v}`
-  }
 
   // 左值：主语 + 属性路径（如 "操作人的 department"）
   const left = `${src}的 ${row.attributePath || '『未选择属性』'}`
@@ -280,11 +272,7 @@ const switchValueType = (row, target) => {
           v-if="row.valueSource === 'LITERAL'"
           v-model="row.value"
           class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-          :placeholder="
-            row.operator === 'HAS_RELATION'
-              ? '关系名，如 collaborator'
-              : '固定字面量，如 computer'
-          "
+          placeholder="固定字面量，如 computer"
           @change="onFieldChange"
         />
         <!-- ATTRIBUTE：下拉选择资源属性引用，支持常见 resource.* 字段 -->

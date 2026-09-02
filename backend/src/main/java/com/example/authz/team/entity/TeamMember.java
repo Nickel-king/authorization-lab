@@ -1,6 +1,7 @@
 package com.example.authz.team.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -30,9 +31,11 @@ public class TeamMember {
     /** 用户 ID，指向 sys_user.id */
     private Long userId;
 
-    /** 团队角色：member 成员 / leader 组长 */
-    private String teamRole;
+    /** 团队角色：member 成员 / leader 组长（映射 team_role 列） */
+    @TableField("team_role")
+    private String role;
 
-    /** 加入时间 */
-    private LocalDateTime createdAt;
+    /** 加入时间（映射 created_at 列） */
+    @TableField("created_at")
+    private LocalDateTime createTime;
 }
