@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.authz.project.mapper.ProjectMapper">
+
+    <!--
+        项目列表查询：主表使用别名 p（与 @DataScope tableAlias 呼应）。
+        数据层面的行级过滤由 DataScopeInterceptor 自动改写 SQL 注入，
+        Mapper XML 不再包含任何手工拼接的数据权限条件。
+        生成的 ABAC 条件引用未限定列（department / owner_id），
+        单表查询下由数据库按唯一表解析。
+    -->
+    <select id="selectProjectList" resultType="com.example.authz.project.entity.Project">
+        SELECT p.*
+        FROM project p
+    </select>
+
+</mapper>

@@ -34,6 +34,12 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
+        <!-- AOP：配合 @CheckAbac 声明式授权拦截 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
         <!-- MyBatis-Plus -->
         <dependency>
             <groupId>com.baomidou</groupId>

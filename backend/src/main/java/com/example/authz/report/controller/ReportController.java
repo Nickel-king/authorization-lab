@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.authz.authorization.query.DataScopeService;
 import com.example.authz.authorization.query.SqlFilterResult;
 import com.example.authz.common.ApiResponse;
+import com.example.authz.common.annotation.CheckAbac;
 import com.example.authz.report.entity.Report;
 import com.example.authz.report.service.ReportService;
 import lombok.RequiredArgsConstructor;
@@ -17,7 +18,8 @@ import java.util.Map;
  * 报表接口。
  * <p>
  * 提供报表列表查询（Step 06 集成 SQL 下推的数据权限过滤）以及
- * 报表新增能力，供“统计与财务报表”工作台页面使用。
+ * 报表新增能力，供"统计与财务报表"工作台页面使用。
+ * 单资源删除操作通过 {@link CheckAbac} 声明式授权拦截。
  *
  * @author Nickel
  * @since 2026-08-29
@@ -111,10 +113,14 @@ public class ReportController {
 
     /**
      * 删除一张报表。
+     * <p>
+     * 由 {@link CheckAbac} 自动校验当前用户对
+     * report:{id} 的 delete 权限，拒绝时返回 403。
      *
      * @param id 报表主键
      * @return 操作结果
      */
+    @CheckAbac(resourceType = "report", action = "delete", resourceIdSpEL = "#id")
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(
             @PathVariable Long id
