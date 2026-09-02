@@ -1,12 +1,14 @@
 package com.example.authz.common.aspect;
 
+import com.example.authz.authorization.AuthorizationDecision;
 import com.example.authz.authorization.AuthorizationRequest;
 import com.example.authz.authorization.AuthorizationService;
 import com.example.authz.common.annotation.CheckAbac;
+import com.example.authz.common.exception.AccessDeniedException;
 import lombok.RequiredArgsConstructor;
-import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Before;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.context.expression.MethodBasedEvaluationContext;
 import org.springframework.core.DefaultParameterNameDiscoverer;
@@ -18,20 +20,19 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
 
 /**
  * ABAC 声明式授权切面（Declarative ABAC Enforcement）。
  * <p>
- * 拦截所有标注 {@link CheckAbac} 的方法：
+ * 拦截所有标注 {@link CheckAbac} 的方法，在目标方法执行前（{@code @Before}）：
  * <ol>
  *   <li>通过 Spring Expression Language（SpEL）按 {@link CheckAbac#resourceIdSpEL()}
  *       从方法入参中动态解析资源 ID（如 {@code #id} / {@code #request.resourceId}）；</li>
  *   <li>从入参中识别主体用户（参数名为 userId / currentUserId），缺省回落为 1 号用户
  *       （与本演示系统的模拟身份约定一致）；</li>
- *   <li>组装 {@link AuthorizationRequest} 并调用
- *       {@link AuthorizationService#checkOrThrow}——决策为 DENY 时抛出 403
- *       （FORBIDDEN），业务方法不会继续执行。</li>
+ *   <li>组装 {@link AuthorizationRequest} 并调用 {@link AuthorizationService#check}——决策为
+ *       {@code DENY} 时抛出 {@link AccessDeniedException}（经全局异常处理映射为 403），
+ *       目标方法不会执行。</li>
  * </ol>
  *
  * @author Nickel
@@ -52,25 +53,20 @@ public class AbacAuthorizationAspect {
     /** 未从入参解析到目标用户时的默认用户 ID（与本系统“默认 1 号用户”约定一致） */
     private static final Long DEFAULT_USER_ID = 1L;
 
-    /** 聚合授权服务（RBAC + ABAC），拒绝时由 checkOrThrow 抛 403 */
+    /** 聚合授权服务（RBAC + ABAC） */
     private final AuthorizationService authorizationService;
 
     /**
-     * 拦截标注 {@link CheckAbac} 的方法，执行授权校验后放行。
+     * 目标方法执行前完成授权校验；拒绝时抛出 {@link AccessDeniedException} 阻断调用。
      *
-     * @param pjp       连接点（目标方法）
+     * @param joinPoint 连接点（目标方法元信息）
      * @param checkAbac 方法上的授权注解（资源类型/动作/资源 ID SpEL）
-     * @return 原方法返回值
-     * @throws Throwable 授权拒绝抛 403，或原方法自身异常
      */
-    @Around("@annotation(checkAbac)")
-    public Object enforce(
-            ProceedingJoinPoint pjp,
-            CheckAbac checkAbac
-    ) throws Throwable {
+    @Before("@annotation(checkAbac)")
+    public void enforce(JoinPoint joinPoint, CheckAbac checkAbac) {
 
-        Long resourceId = resolveResourceId(checkAbac.resourceIdSpEL(), pjp);
-        Long userId = resolveUserId(pjp);
+        Long resourceId = resolveResourceId(checkAbac.resourceIdSpEL(), joinPoint);
+        Long userId = resolveUserId(joinPoint);
 
         AuthorizationRequest request = AuthorizationRequest.builder()
                 .userId(userId)
@@ -79,26 +75,32 @@ public class AbacAuthorizationAspect {
                 .resourceId(resourceId)
                 .build();
 
-        // 拒绝时抛 403，直接阻断后续业务逻辑
-        authorizationService.checkOrThrow(request);
+        AuthorizationDecision decision = authorizationService.check(request);
 
-        return pjp.proceed();
+        if (!decision.isAllowed()) {
+            throw new AccessDeniedException(
+                    checkAbac.resourceType() + ":" + checkAbac.action(),
+                    decision.getReason() != null
+                            ? decision.getReason()
+                            : "权限不足，访问被拒绝"
+            );
+        }
     }
 
     /**
      * 解析资源 ID：优先按 SpEL 对方法入参求值，失败/为空时退化为字面量解析。
      *
      * @param resourceIdSpEL 注解声明的 SpEL 表达式（可为空）
-     * @param pjp            连接点，提供目标方法与入参
+     * @param joinPoint      连接点，提供目标方法与入参
      * @return 资源 ID；表达式为空时返回 null（表示不针对具体资源实例）
      */
-    private Long resolveResourceId(String resourceIdSpEL, ProceedingJoinPoint pjp) {
+    private Long resolveResourceId(String resourceIdSpEL, JoinPoint joinPoint) {
 
         if (!StringUtils.hasText(resourceIdSpEL)) {
             return null;
         }
 
-        Object value = evaluateSpel(resourceIdSpEL, pjp);
+        Object value = evaluateSpel(resourceIdSpEL, joinPoint);
         if (value != null) {
             return asLong(value);
         }
@@ -117,17 +119,17 @@ public class AbacAuthorizationAspect {
      * 在“方法入参可见”上下文中求值 SpEL 表达式。
      *
      * @param expression SpEL 表达式
-     * @param pjp        连接点
+     * @param joinPoint  连接点
      * @return 求值结果；参数名不可用导致无法引用时返回 null
      */
-    private Object evaluateSpel(String expression, ProceedingJoinPoint pjp) {
+    private Object evaluateSpel(String expression, JoinPoint joinPoint) {
 
-        MethodSignature signature = (MethodSignature) pjp.getSignature();
+        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
         Method method = signature.getMethod();
 
         // MethodBasedEvaluationContext 将方法参数名绑定为 SpEL 变量（#id 等）
         MethodBasedEvaluationContext context = new MethodBasedEvaluationContext(
-                pjp.getTarget(), method, pjp.getArgs(), PARAM_NAME_DISCOVERER);
+                joinPoint.getTarget(), method, joinPoint.getArgs(), PARAM_NAME_DISCOVERER);
 
         try {
             Expression exp = SPEL_PARSER.parseExpression(expression);
@@ -142,14 +144,14 @@ public class AbacAuthorizationAspect {
      * 解析当前主体用户 ID：扫描入参中名为 userId / currentUserId 的参数，
      * 未命中时使用默认 1 号用户。
      *
-     * @param pjp 连接点
+     * @param joinPoint 连接点
      * @return 主体用户 ID
      */
-    private Long resolveUserId(ProceedingJoinPoint pjp) {
+    private Long resolveUserId(JoinPoint joinPoint) {
 
-        MethodSignature signature = (MethodSignature) pjp.getSignature();
+        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
         Method method = signature.getMethod();
-        Object[] args = pjp.getArgs();
+        Object[] args = joinPoint.getArgs();
 
         String[] paramNames = PARAM_NAME_DISCOVERER.getParameterNames(method);
         if (paramNames != null) {

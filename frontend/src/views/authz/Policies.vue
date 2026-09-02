@@ -2,16 +2,20 @@
 // 数据与策略规则中心（ABAC）：顶部过滤 + 策略表格 + 规则构造抽屉
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, Pencil, Copy, Trash2, Filter } from 'lucide-vue-next'
+import { Plus, Pencil, Copy, Trash2, Filter, Search, RotateCcw } from 'lucide-vue-next'
 import StatusBadge from '@/components/StatusBadge.vue'
 import VisualRuleBuilder from '@/components/VisualRuleBuilder.vue'
 import { fetchPolicies, createPolicy, updatePolicy, deletePolicy } from '@/api/policy'
 
-// 策略列表
+// 策略列表与加载态
 const policies = ref([])
+const loading = ref(false)
 
-// 过滤条件
+// 过滤条件（UI 草稿，修改后需点击「查询」或按 Enter 才生效）
 const filters = ref({ resource: '', action: '', effect: '', enabled: '' })
+
+// 已提交的过滤条件快照（「查询」时从草稿落盘，表格据此渲染）
+const appliedFilters = ref({ resource: '', action: '', effect: '', enabled: '' })
 
 // 抽屉开关与编辑模式
 const drawerVisible = ref(false)
@@ -34,21 +38,42 @@ const form = ref({
 const RESOURCES = ['project', 'report']
 const ACTIONS = ['read', 'create', 'update', 'delete']
 
-// 表格过滤结果
+// 表格过滤结果（基于「已提交」的过滤快照，草稿变更不会实时改表）
 const filteredPolicies = computed(() => {
   return policies.value.filter((p) => {
-    if (filters.value.resource && p.policy.resource !== filters.value.resource) return false
-    if (filters.value.action && p.policy.action !== filters.value.action) return false
-    if (filters.value.effect && p.policy.effect !== filters.value.effect) return false
-    if (filters.value.enabled !== '' && String(p.policy.enabled) !== filters.value.enabled) return false
+    if (appliedFilters.value.resource && p.policy.resource !== appliedFilters.value.resource) return false
+    if (appliedFilters.value.action && p.policy.action !== appliedFilters.value.action) return false
+    if (appliedFilters.value.effect && p.policy.effect !== appliedFilters.value.effect) return false
+    if (appliedFilters.value.enabled !== '' && String(p.policy.enabled) !== appliedFilters.value.enabled) return false
     return true
   })
 })
 
+// 从后端拉取全量策略
+const loadPolicies = async () => {
+  loading.value = true
+  try {
+    policies.value = await fetchPolicies()
+  } finally {
+    loading.value = false
+  }
+}
+
+// 「查询」：提交过滤快照并重新拉取数据
+const search = async () => {
+  appliedFilters.value = { ...filters.value }
+  await loadPolicies()
+}
+
+// 「重置」：清空全部过滤条件并重新拉取未过滤列表
+const reset = async () => {
+  filters.value = { resource: '', action: '', effect: '', enabled: '' }
+  appliedFilters.value = { ...filters.value }
+  await loadPolicies()
+}
+
 // 进入页面加载策略
-onMounted(async () => {
-  policies.value = await fetchPolicies()
-})
+onMounted(loadPolicies)
 
 // 打开新增抽屉
 const openCreate = () => {
@@ -132,40 +157,48 @@ const submit = async () => {
     ElMessage.success('策略创建成功')
   }
   drawerVisible.value = false
-  policies.value = await fetchPolicies()
+  await loadPolicies()
 }
 
 // 删除策略
 const onDelete = async (p) => {
   await deletePolicy(p.policy.id)
   ElMessage.success('策略已删除')
-  policies.value = await fetchPolicies()
+  await loadPolicies()
 }
 </script>
 
 <template>
   <div class="space-y-4">
-    <!-- 顶部过滤栏 -->
-    <div class="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3">
+    <!-- 顶部过滤栏：筛选草稿 + 查询/重置（修改后按 Enter 或点击「查询」生效） -->
+    <div
+      class="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3"
+      @keydown.enter="search"
+    >
       <Filter class="h-4 w-4 text-slate-400" />
-      <select v-model="filters.resource" class="rounded-md border border-slate-300 px-2 py-1.5 text-xs">
+      <select v-model="filters.resource" class="rounded-md border border-slate-300 px-2 py-1.5 text-xs" @change="search">
         <option value="">资源类型 · 全部</option>
         <option v-for="r in RESOURCES" :key="r" :value="r">{{ r }}</option>
       </select>
-      <select v-model="filters.action" class="rounded-md border border-slate-300 px-2 py-1.5 text-xs">
+      <select v-model="filters.action" class="rounded-md border border-slate-300 px-2 py-1.5 text-xs" @change="search">
         <option value="">操作 · 全部</option>
         <option v-for="a in ACTIONS" :key="a" :value="a">{{ a }}</option>
       </select>
-      <select v-model="filters.effect" class="rounded-md border border-slate-300 px-2 py-1.5 text-xs">
+      <select v-model="filters.effect" class="rounded-md border border-slate-300 px-2 py-1.5 text-xs" @change="search">
         <option value="">效果 · 全部</option>
         <option value="ALLOW">ALLOW</option>
         <option value="DENY">DENY</option>
       </select>
-      <select v-model="filters.enabled" class="rounded-md border border-slate-300 px-2 py-1.5 text-xs">
+      <select v-model="filters.enabled" class="rounded-md border border-slate-300 px-2 py-1.5 text-xs" @change="search">
         <option value="">启用状态 · 全部</option>
         <option value="true">启用</option>
         <option value="false">停用</option>
       </select>
+
+      <!-- 查询 / 重置 -->
+      <el-button type="primary" :icon="Search" :loading="loading" @click="search">查询</el-button>
+      <el-button :icon="RotateCcw" :disabled="loading" @click="reset">重置</el-button>
+
       <div class="ml-auto">
         <el-button type="primary" :icon="Plus" @click="openCreate">新增策略</el-button>
       </div>
@@ -173,7 +206,7 @@ const onDelete = async (p) => {
 
     <!-- 策略表格 -->
     <div class="overflow-hidden rounded-lg border border-slate-200 bg-white">
-      <el-table :data="filteredPolicies" style="width: 100%" size="default">
+      <el-table v-loading="loading" :data="filteredPolicies" style="width: 100%" size="default">
         <el-table-column prop="policy.code" label="策略标识" width="210">
           <template #default="{ row }">
             <code class="text-xs text-indigo-600">{{ row.policy.code }}</code>
