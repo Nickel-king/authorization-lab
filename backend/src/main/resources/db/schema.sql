@@ -3,7 +3,6 @@
 -- Step 00: base tables + seed data
 -- Step 01: RBAC tables + seed data
 -- Step 03: ABAC Policy Model
--- Step 05: ReBAC Relation Tuples
 -- Run against database: authorization_lab
 -- =============================================
 
@@ -34,7 +33,7 @@ COMMENT ON COLUMN sys_user.created_at IS '记录创建时间';
 -- ------------------------------------------------------------
 -- 项目表（project）
 -- 描述可被授权的资源对象，含所属部门与属主，
--- 用于 RBAC / ABAC / ReBAC 策略的评估与数据权限过滤。
+-- 用于 RBAC / ABAC 策略的评估与数据权限过滤。
 -- ------------------------------------------------------------
 CREATE TABLE project (
     id BIGSERIAL PRIMARY KEY,
@@ -49,7 +48,7 @@ CREATE TABLE project (
         REFERENCES sys_user(id)
 );
 
-COMMENT ON TABLE project IS '项目表：可被授权的资源对象，用于 RBAC / ABAC / ReBAC 策略的评估与数据权限过滤';
+COMMENT ON TABLE project IS '项目表：可被授权的资源对象，用于 RBAC / ABAC 策略的评估与数据权限过滤';
 COMMENT ON COLUMN project.id IS '项目主键，自增 ID';
 COMMENT ON COLUMN project.name IS '项目名称';
 COMMENT ON COLUMN project.description IS '项目描述';
@@ -343,7 +342,7 @@ COMMENT ON COLUMN auth_policy_condition.id IS '条件主键，自增 ID';
 COMMENT ON COLUMN auth_policy_condition.policy_id IS '所属策略 ID，关联 auth_policy.id（级联删除）';
 COMMENT ON COLUMN auth_policy_condition.attribute_source IS '属性来源：SUBJECT / RESOURCE / CONTEXT';
 COMMENT ON COLUMN auth_policy_condition.attribute_path IS '属性路径，如 department、ownerId';
-COMMENT ON COLUMN auth_policy_condition.operator IS '比较运算符：EQUALS / NOT_EQUALS / CONTAINS / HAS_RELATION 等';
+COMMENT ON COLUMN auth_policy_condition.operator IS '比较运算符：EQUALS / NOT_EQUALS / CONTAINS / STARTS_WITH / ENDS_WITH / IN';
 COMMENT ON COLUMN auth_policy_condition.value_source IS '右操作数来源：LITERAL（字面量）/ ATTRIBUTE（另一个属性）';
 COMMENT ON COLUMN auth_policy_condition.value IS '右操作数值：字面量或形如 resource.department 的属性表达式';
 COMMENT ON COLUMN auth_policy_condition.sort_order IS '条件在同策略内的排序序号，数字越小越先求值';
@@ -393,105 +392,6 @@ SELECT
     1
 FROM auth_policy
 WHERE code = 'project_update_same_department';
-
--- =============================================
--- Step 05: ReBAC（基于关系的访问控制）关系元组
--- =============================================
-
--- ------------------------------------------------------------
--- 关系元组表（auth_relation_tuple）
--- 描述实体之间的一段关系，形如：
---   <resourceType:resourceId#relation@subjectType:subjectId[#subjectRelation]>
--- 例：project:3#collaborator@team:1#member
--- 当主体为 Userset 时，通过 subjectRelation 表达嵌套关系，
--- 实现多跳图推导。
--- ------------------------------------------------------------
-CREATE TABLE auth_relation_tuple (
-    id BIGSERIAL PRIMARY KEY,
-
-    resource_type VARCHAR(100) NOT NULL,
-
-    resource_id VARCHAR(100) NOT NULL,
-
-    relation VARCHAR(100) NOT NULL,
-
-    subject_type VARCHAR(100) NOT NULL,
-
-    subject_id VARCHAR(100) NOT NULL,
-
-    subject_relation VARCHAR(100),
-
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT uk_relation_tuple
-        UNIQUE (
-            resource_type,
-            resource_id,
-            relation,
-            subject_type,
-            subject_id,
-            subject_relation
-        )
-);
-
-COMMENT ON TABLE auth_relation_tuple IS '关系元组表：ReBAC 的核心数据，以 <资源#关系@主体> 形式描述实体间的一段关系';
-COMMENT ON COLUMN auth_relation_tuple.id IS '关系元组主键，自增 ID';
-COMMENT ON COLUMN auth_relation_tuple.resource_type IS '资源类型，例如 project / team';
-COMMENT ON COLUMN auth_relation_tuple.resource_id IS '资源 ID，例如 3';
-COMMENT ON COLUMN auth_relation_tuple.relation IS '关系名称，例如 owner / collaborator / member / parent';
-COMMENT ON COLUMN auth_relation_tuple.subject_type IS '主体类型，例如 user / team';
-COMMENT ON COLUMN auth_relation_tuple.subject_id IS '主体 ID，例如 1';
-COMMENT ON COLUMN auth_relation_tuple.subject_relation IS '主体关系（可为空），用于表达 Userset 集合，如 team#member 中的 member';
-COMMENT ON COLUMN auth_relation_tuple.created_at IS '元组创建时间';
-
-CREATE INDEX idx_tuple_resource
-    ON auth_relation_tuple (resource_type, resource_id);
-
-CREATE INDEX idx_tuple_subject
-    ON auth_relation_tuple (subject_type, subject_id);
-
-COMMENT ON INDEX idx_tuple_resource IS '关系元组按资源维度查询的索引（resource_type, resource_id）';
-COMMENT ON INDEX idx_tuple_subject IS '关系元组按主体维度查询的索引（subject_type, subject_id）';
-
--- 1. 张三 (user:1) 是团队 1 (team:1) 的成员
-INSERT INTO auth_relation_tuple
-    (resource_type, resource_id, relation, subject_type, subject_id, subject_relation)
-VALUES
-    ('team', '1', 'member', 'user', '1', NULL);
-
--- 2. 团队 1 (team:1) 是项目 3 (project:3) 的协作者 (collaborator)
-INSERT INTO auth_relation_tuple
-    (resource_type, resource_id, relation, subject_type, subject_id, subject_relation)
-VALUES
-    ('project', '3', 'collaborator', 'team', '1', 'member');
-
--- 3. ReBAC 策略：项目协作者可修改项目
-INSERT INTO auth_policy
-    (code, name, resource, action, effect, priority, enabled, description)
-VALUES
-    (
-        'project_update_collaborator',
-        '项目协作者可修改项目',
-        'project',
-        'update',
-        'ALLOW',
-        60,
-        TRUE,
-        '通过ReBAC判断是否具备collaborator关系'
-    );
-
-INSERT INTO auth_policy_condition
-    (policy_id, attribute_source, attribute_path, operator, value_source, value, sort_order)
-SELECT
-    id,
-    'SUBJECT',
-    'id',
-    'HAS_RELATION',
-    'LITERAL',
-    'collaborator',
-    1
-FROM auth_policy
-WHERE code = 'project_update_collaborator';
 
 -- =============================================
 -- Step 06: NextAuth Matrix 中台控制台支撑
@@ -584,7 +484,7 @@ VALUES
 -- ------------------------------------------------------------
 -- 报表表（report）
 -- 描述可被授权的“报表”业务资源，含密级等级与所属部门，
--- 用于 RBAC / ABAC / ReBAC 策略评估与数据权限过滤。
+-- 用于 RBAC / ABAC 策略评估与数据权限过滤。
 -- ------------------------------------------------------------
 CREATE TABLE report (
     id BIGSERIAL PRIMARY KEY,
@@ -696,38 +596,10 @@ SELECT
 FROM auth_policy
 WHERE code = 'report_export_finance_only';
 
--- 同时为报表的 view 建立 ReBAC：可查看被授权为 viewer 的报表
-INSERT INTO auth_policy
-    (code, name, resource, action, effect, priority, enabled, description)
-VALUES
-    (
-        'report_viewer',
-        '报表被授权协作者可查看',
-        'report',
-        'view',
-        'ALLOW',
-        60,
-        TRUE,
-        '通过ReBAC判断用户是否为报表的viewer关系主体'
-    );
-
-INSERT INTO auth_policy_condition
-    (policy_id, attribute_source, attribute_path, operator, value_source, value, sort_order)
-SELECT
-    id,
-    'SUBJECT',
-    'id',
-    'HAS_RELATION',
-    'LITERAL',
-    'viewer',
-    1
-FROM auth_policy
-WHERE code = 'report_viewer';
-
 -- =============================================
 -- Step 08: 组织与身份中台 + 报表扩展
 --   1) 部门组织树 sys_department
---   2) 团队 sys_team（供 ReBAC 快捷授权）
+--   2) 团队 sys_team
 --   3) 报表分类字段 + 删除权限点
 -- =============================================
 
@@ -769,7 +641,7 @@ FROM sys_department WHERE code = 'computer';
 
 -- ------------------------------------------------------------
 -- 团队表（sys_team）
--- 描述 ReBAC 关系图中的团队主体，供快捷授权表单选择。
+-- 描述组织中的团队主体，供成员管理与授权配置选择。
 -- 例：AI 联合攻关小组（team:1）
 -- ------------------------------------------------------------
 CREATE TABLE sys_team (
@@ -780,7 +652,7 @@ CREATE TABLE sys_team (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-COMMENT ON TABLE sys_team IS '团队表：ReBAC 关系图中的团队主体';
+COMMENT ON TABLE sys_team IS '团队表：组织中的团队主体';
 COMMENT ON COLUMN sys_team.id IS '团队主键，自增 ID';
 COMMENT ON COLUMN sys_team.code IS '团队唯一编码';
 COMMENT ON COLUMN sys_team.name IS '团队名称';
@@ -792,8 +664,7 @@ INSERT INTO sys_team (code, name, description) VALUES
 
 -- ------------------------------------------------------------
 -- 团队表增强（sys_team.department_id）与团队成员表（sys_team_member）
--- 描述团队与部门归属关系，以及团队成员（member/leader）维护，
--- 成员同步写回 auth_relation_tuple 以支撑 ReBAC 图推导。
+-- 描述团队与部门归属关系，以及团队成员（member/leader）维护。
 -- ------------------------------------------------------------
 -- 团队表新增关联部门字段（可选，顶级部门可为空）
 ALTER TABLE sys_team
@@ -826,22 +697,9 @@ COMMENT ON COLUMN sys_team_member.team_role IS '团队角色：member 成员 / l
 COMMENT ON COLUMN sys_team_member.created_at IS '加入时间';
 
 -- 种子成员：张三（user:1）作为 AI 联合攻关小组的成员
--- 同时向关系元组表同步注入 team:1#member@user:1，支撑拓扑图渲染 User → Team
 INSERT INTO sys_team_member (team_id, user_id, team_role)
 SELECT t.id, 1, 'member'
 FROM sys_team t WHERE t.code = 'AI-1';
-
-INSERT INTO auth_relation_tuple (resource_type, resource_id, relation, subject_type, subject_id)
-SELECT 'team', CAST(t.id AS VARCHAR), 'member', 'user', '1'
-FROM sys_team t WHERE t.code = 'AI-1'
-  AND NOT EXISTS (
-      SELECT 1 FROM auth_relation_tuple r
-      WHERE r.resource_type = 'team'
-        AND r.resource_id = CAST(t.id AS VARCHAR)
-        AND r.relation = 'member'
-        AND r.subject_type = 'user'
-        AND r.subject_id = '1'
-  );
 
 -- 报表新增分类字段（FINANCIAL / ASSET），增量兼容已存在的表
 ALTER TABLE report

@@ -3,8 +3,8 @@ package com.example.authz.common.enums;
 /**
  * 关系枚举（Relation）。
  * <p>
- * 覆盖 ReBAC 关系图 / 策略中用到的全部关系名，其 {@code value} 与
- * 关系元组表 auth_relation_tuple 的 relation 列存值保持一致（小写）。
+ * 覆盖团队角色等业务关系名，其 {@code value} 与组织成员表
+ * sys_team_member 的 team_role 列及策略配置存值保持一致（小写）。
  *
  * @author Nickel
  * @since 2026-09-01

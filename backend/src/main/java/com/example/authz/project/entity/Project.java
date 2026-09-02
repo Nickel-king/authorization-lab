@@ -11,7 +11,7 @@ import java.time.LocalDateTime;
  * 项目（Project）实体。
  * <p>
  * 对应数据库表 {@code project}，描述一个可被授权的资源对象，
- * 含所属部门(department)与属主(ownerId)，用于 RBAC / ABAC / ReBAC
+ * 含所属部门(department)与属主(ownerId)，用于 RBAC / ABAC
  * 策略的评估与数据权限过滤。
  *
  * @author Nickel

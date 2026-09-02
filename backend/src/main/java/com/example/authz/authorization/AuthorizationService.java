@@ -4,7 +4,7 @@ package com.example.authz.authorization;
  * 授权服务接口（PDP 入口）。
  * <p>
  * 对外提供统一的单资源授权判断能力：根据请求中的用户、资源、操作，
- * 聚合 RBAC / ABAC / ReBAC 三层策略计算最终的授权决策。
+ * 聚合 RBAC（功能）与 ABAC（数据/属性）两层策略计算最终的授权决策。
  *
  * @author Nickel
  * @since 2026-08-28

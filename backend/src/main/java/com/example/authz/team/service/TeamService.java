@@ -14,20 +14,18 @@ import java.util.List;
  * <p>
  * 继承 MyBatis-Plus {@link IService}，提供团队基础 CRUD，
  * 并扩展团队成员管理（列表/批量加入/移除/设组长）以及团队级联删除，
- * 成员变动会同步写回 ReBAC 关系元组。
+ * 成员关系存于组织成员表（sys_team_member）。
  *
  * @author Nickel
  * @since 2026-08-29
  */
 public interface TeamService extends IService<Team> {
 
-    /** 成员关系名常量：团队对用户的成员关系（注入元组 relation） */
+    /** 成员关系名常量：团队成员的默认角色 */
     String RELATION_MEMBER = RelationEnum.MEMBER.getValue();
 
     /**
-     * 组长关系名常量：团队对用户的组长关系（Dual-Tuple 模式中标识管理员的补充元组）。
-     * <p>
-     * 组长同时持有 member 元组与 leader 元组，避免破坏 ReBAC 继承。
+     * 组长关系名常量：团队组长（管理团队的角色身份）。
      */
     String RELATION_LEADER = RelationEnum.LEADER.getValue();
 

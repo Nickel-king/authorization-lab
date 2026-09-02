@@ -21,7 +21,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
         "com.example.authz.department.mapper",
         "com.example.authz.team.mapper",
         "com.example.authz.authorization.policy.mapper",
-        "com.example.authz.authorization.rebac.mapper",
         "com.example.authz.authorization.rbac.mapper",
         "com.example.authz.metadata.mapper"
 })

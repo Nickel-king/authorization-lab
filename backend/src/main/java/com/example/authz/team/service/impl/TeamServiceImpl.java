@@ -2,32 +2,25 @@ package com.example.authz.team.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.example.authz.authorization.rebac.RelationTupleService;
-import com.example.authz.authorization.rebac.dto.RelationTupleCreateDTO;
-import com.example.authz.authorization.rebac.entity.RelationTuple;
-import com.example.authz.common.enums.ResourceTypeEnum;
-import com.example.authz.common.event.ResourceDeletedEvent;
 import com.example.authz.department.entity.Department;
 import com.example.authz.department.service.DepartmentService;
 import com.example.authz.team.dto.TeamMemberAddDTO;
 import com.example.authz.team.dto.TeamMemberVO;
 import com.example.authz.team.dto.TeamVO;
 import com.example.authz.team.entity.Team;
+import com.example.authz.team.entity.TeamMember;
 import com.example.authz.team.mapper.TeamMapper;
+import com.example.authz.team.mapper.TeamMemberMapper;
 import com.example.authz.team.service.TeamService;
 import com.example.authz.user.entity.User;
 import com.example.authz.user.service.UserService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -39,13 +32,8 @@ import java.util.stream.Collectors;
  * 团队（Team）服务实现。
  * <p>
  * 基于 {@link ServiceImpl} + {@link TeamMapper} 提供团队基础 CRUD，
- * 团队成员关系已完全收敛于 ReBAC 关系元组表（auth_relation_tuple），
- * 采用【Dual-Tuple】模式承载组长身份：
- * <ul>
- *   <li>{@code team:{id}#member@user:{userId}}：成员基底元组，维系项目协作继承</li>
- *   <li>{@code team:{id}#leader@user:{userId}}：组长补充元组，标识团队管理员</li>
- * </ul>
- * 组长同时持有上述两条元组，升/降职不改动 member 基底元组，保证 ReBAC 图推导不中断。
+ * 团队成员关系存于组织成员表（sys_team_member），角色（member / leader）
+ * 由 team_role 列单条承载，一用户一团队仅一条记录，不再依赖任何授权关系元组。
  *
  * @author Nickel
  * @since 2026-08-29
@@ -56,18 +44,10 @@ public class TeamServiceImpl
         extends ServiceImpl<TeamMapper, Team>
         implements TeamService {
 
-    /** 团队在 ReBAC 图中的资源类型常量 */
-    private static final String RESOURCE_TYPE_TEAM =
-            ResourceTypeEnum.TEAM.getValue();
-
-    /** 用户在 ReBAC 图中的主体类型常量 */
-    private static final String SUBJECT_TYPE_USER =
-            ResourceTypeEnum.USER.getValue();
-
     /**
-     * 团队成员关系集合：member + leader（Dual-Tuple 模式下均视为团队成员身份）。
+     * 团队成员角色集合：member + leader（leader 亦视为团队成员身份）。
      * <p>
-     * 用于成员清单查询、成员数量统计，以及升/降职时的关系合法性校验。
+     * 用于成员清单查询、成员数量统计，以及升/降职时的角色合法性校验。
      */
     private static final Set<String> MEMBER_RELATIONS =
             Set.of(RELATION_MEMBER, RELATION_LEADER);
@@ -78,11 +58,8 @@ public class TeamServiceImpl
     /** 部门服务：解析团队关联部门名称 */
     private final DepartmentService departmentService;
 
-    /** ReBAC 关系元组服务：团队成员关系全部存储于元组表（取代原 TeamMember） */
-    private final RelationTupleService relationTupleService;
-
-    /** 应用事件发布器：删除团队时发布领域事件，触发授权层元组清理 */
-    private final ApplicationEventPublisher eventPublisher;
+    /** 团队成员表 Mapper：成员关系全部存于 sys_team_member */
+    private final TeamMemberMapper teamMemberMapper;
 
     /**
      * {@inheritDoc}
@@ -100,7 +77,7 @@ public class TeamServiceImpl
                 .collect(Collectors.toMap(Department::getId,
                         Department::getName, (a, b) -> a));
 
-        // 3. 团队成员数按 team_id 统计（基于 ReBAC 元组，去重用户）
+        // 3. 团队成员数按 team_id 统计（sys_team_member 一用户一条记录，直接计数）
         Map<Long, Long> memberCountByTeam = countMembersPerTeam();
 
         // 4. 组装 TeamVO
@@ -123,34 +100,19 @@ public class TeamServiceImpl
     }
 
     /**
-     * 基于 ReBAC 元组统计每个团队的成员数量。
-     * <p>
-     * 仅统计 member / leader 身份元组，且按 (teamId, userId) 去重，
-     * 避免组长同时持有双元组导致的重复计数。
+     * 按 team_id 统计每个团队的成员数量（sys_team_member 记录数）。
      *
-     * @return teamId -> 去重后的成员数
+     * @return teamId -> 成员数
      */
     private Map<Long, Long> countMembersPerTeam() {
 
-        // 1. 按团队聚合去重的用户集合
-        Map<Long, Set<String>> userIdsByTeam = new HashMap<>();
-        for (RelationTuple tuple :
-                relationTupleService.listTuples(null, null, RESOURCE_TYPE_TEAM, null)) {
-            // 仅统计成员/组长身份元组，跳过其他关系（如 parent 等）
-            if (!MEMBER_RELATIONS.contains(tuple.getRelation())) {
-                continue;
-            }
-            userIdsByTeam
-                    .computeIfAbsent(Long.valueOf(tuple.getResourceId()), k -> new HashSet<>())
-                    .add(tuple.getSubjectId());
-        }
-
-        // 2. 转为团队 -> 成员数
-        Map<Long, Long> memberCountByTeam = new HashMap<>();
-        for (Map.Entry<Long, Set<String>> entry : userIdsByTeam.entrySet()) {
-            memberCountByTeam.put(entry.getKey(), (long) entry.getValue().size());
-        }
-        return memberCountByTeam;
+        return teamMemberMapper.selectList(
+                        new LambdaQueryWrapper<TeamMember>()
+                                .select(TeamMember::getTeamId)
+                )
+                .stream()
+                .collect(Collectors.groupingBy(
+                        TeamMember::getTeamId, Collectors.counting()));
     }
 
     /**
@@ -202,23 +164,12 @@ public class TeamServiceImpl
             throw new IllegalArgumentException("团队不存在: id=" + id);
         }
 
-        // 2. 发布资源删除领域事件，由授权层 RelationTupleCleanupListener
-        //    同事务清理该团队的 ReBAC 关系元组（业务层不再直接操作元组表）
-        eventPublisher.publishEvent(new ResourceDeletedEvent(
-                ResourceTypeEnum.TEAM.getValue(),
-                String.valueOf(id)
-        ));
-
-        // 3. 删除团队本体
+        // 2. 删除团队本体（sys_team_member 经外键 ON DELETE CASCADE 级联删除）
         removeById(id);
     }
 
     /**
      * 解析团队成员清单。
-     * <p>
-     * 基于 {@link RelationTupleService} 查询团队的 member / leader 元组，
-     * 返回 {@link TeamMemberVO}，其中 {@code teamRole} / {@code isLeader}
-     * 由是否持有 leader 补充元组推导。
      *
      * @param teamId 团队主键
      * @return 成员视图对象列表
@@ -226,40 +177,32 @@ public class TeamServiceImpl
     @Override
     public List<TeamMemberVO> listMembers(Long teamId) {
 
-        // 1. 查询该团队的全部身份元组（member + leader，Dual-Tuple）
-        List<RelationTuple> tuples =
-                relationTupleService.listTuples(null, null, RESOURCE_TYPE_TEAM, String.valueOf(teamId));
+        // 1. 查询该团队的全部成员记录（按加入时间倒序）
+        List<TeamMember> members = teamMemberMapper.selectList(
+                new LambdaQueryWrapper<TeamMember>()
+                        .eq(TeamMember::getTeamId, teamId)
+                        .orderByDesc(TeamMember::getCreatedAt));
 
         // 2. 拼接用户主体信息，供成员姓名/用户名/部门展示
         Map<Long, User> userById = userService.list().stream()
                 .collect(Collectors.toMap(User::getId, Function.identity(), (a, b) -> a));
 
-        // 3. 按用户去重组装 VO，命中 leader 元组的用户标记为组长
-        Map<Long, TeamMemberVO> voByUser = new LinkedHashMap<>();
-        for (RelationTuple tuple : tuples) {
-            if (!MEMBER_RELATIONS.contains(tuple.getRelation())) {
-                continue;
-            }
-            Long userId = Long.valueOf(tuple.getSubjectId());
+        // 3. 组装 VO：teamRole 直接来自成员记录，isLeader 由角色推导
+        List<TeamMemberVO> result = new ArrayList<>();
+        for (TeamMember member : members) {
+            Long userId = member.getUserId();
             User user = userById.get(userId);
-            TeamMemberVO vo = voByUser.computeIfAbsent(userId, uid -> {
-                TeamMemberVO v = new TeamMemberVO();
-                v.setUserId(uid);
-                v.setDisplayName(user != null ? user.getDisplayName() : "用户#" + uid);
-                v.setUsername(user != null ? user.getUsername() : "-");
-                v.setDepartment(user != null ? user.getDepartment() : null);
-                v.setTeamRole(RELATION_MEMBER);
-                v.setIsLeader(false);
-                v.setCreatedAt(tuple.getCreatedAt());
-                return v;
-            });
-            // leader 补充元组命中时，将该成员标记为组长
-            if (RELATION_LEADER.equals(tuple.getRelation())) {
-                vo.setTeamRole(RELATION_LEADER);
-                vo.setIsLeader(true);
-            }
+            TeamMemberVO vo = new TeamMemberVO();
+            vo.setUserId(userId);
+            vo.setDisplayName(user != null ? user.getDisplayName() : "用户#" + userId);
+            vo.setUsername(user != null ? user.getUsername() : "-");
+            vo.setDepartment(user != null ? user.getDepartment() : null);
+            vo.setTeamRole(member.getTeamRole());
+            vo.setIsLeader(RELATION_LEADER.equals(member.getTeamRole()));
+            vo.setCreatedAt(member.getCreatedAt());
+            result.add(vo);
         }
-        return new ArrayList<>(voByUser.values());
+        return result;
     }
 
     /**
@@ -278,21 +221,27 @@ public class TeamServiceImpl
         }
 
         // 2. 关系名默认 member，并校验只允许 member / leader
-        String relation = StringUtils.hasText(dto.getRelation())
+        String role = StringUtils.hasText(dto.getRelation())
                 ? dto.getRelation() : RELATION_MEMBER;
-        if (!MEMBER_RELATIONS.contains(relation)) {
-            throw new IllegalArgumentException("非法的成员关系: " + relation);
+        if (!MEMBER_RELATIONS.contains(role)) {
+            throw new IllegalArgumentException("非法的成员关系: " + role);
         }
 
-        // 3. 去重后逐个注入元组：始终确保 member 基底，leader 身份再补充 leader 元组
+        // 3. 去重后逐个加入：已存在记录仅做角色升级（member -> leader），否则新增
         List<Long> distinctUserIds = dto.getUserIds().stream()
                 .filter(Objects::nonNull).distinct().collect(Collectors.toList());
         for (Long userId : distinctUserIds) {
-            // 成员的 member 基底元组必须存在（维系 ReBAC 继承）
-            ensureMemberTuple(teamId, userId);
-            // 若请求为组长身份，追加 leader 补充元组（Dual-Tuple）
-            if (RELATION_LEADER.equals(relation)) {
-                ensureLeaderTuple(teamId, userId);
+            TeamMember existing = findMember(teamId, userId);
+            if (existing == null) {
+                TeamMember member = new TeamMember();
+                member.setTeamId(teamId);
+                member.setUserId(userId);
+                member.setTeamRole(role);
+                teamMemberMapper.insert(member);
+            } else if (RELATION_LEADER.equals(role)
+                    && !RELATION_LEADER.equals(existing.getTeamRole())) {
+                existing.setTeamRole(RELATION_LEADER);
+                teamMemberMapper.updateById(existing);
             }
         }
     }
@@ -304,18 +253,10 @@ public class TeamServiceImpl
     @Transactional(rollbackFor = Exception.class)
     public void removeMember(Long teamId, Long userId) {
 
-        // 1. 查询该团队全部身份元组
-        List<RelationTuple> tuples =
-                relationTupleService.listTuples(null, null, RESOURCE_TYPE_TEAM, String.valueOf(teamId));
-
-        // 2. 删除该用户在团队内的 member 与 leader 元组（彻底移出团队）
-        for (RelationTuple tuple : tuples) {
-            if (SUBJECT_TYPE_USER.equals(tuple.getSubjectType())
-                    && String.valueOf(userId).equals(tuple.getSubjectId())
-                    && MEMBER_RELATIONS.contains(tuple.getRelation())) {
-                relationTupleService.deleteTuple(tuple.getId());
-            }
-        }
+        // 删除该用户在团队内的成员记录（移除后不再具备该团队身份）
+        teamMemberMapper.delete(new LambdaQueryWrapper<TeamMember>()
+                .eq(TeamMember::getTeamId, teamId)
+                .eq(TeamMember::getUserId, userId));
     }
 
     /**
@@ -330,110 +271,27 @@ public class TeamServiceImpl
             throw new IllegalArgumentException("非法的成员角色: " + role);
         }
 
-        // 2. 校验用户确为团队成员（须持有 member 基底元组）
-        if (!hasMemberTuple(teamId, userId)) {
+        // 2. 校验用户确为团队成员
+        TeamMember member = findMember(teamId, userId);
+        if (member == null) {
             throw new IllegalArgumentException("该用户不是团队成员");
         }
 
-        if (RELATION_LEADER.equals(role)) {
-            // 3a. 任命组长：确保 member 基底存在，并补充 leader 元组（Dual-Tuple）
-            ensureMemberTuple(teamId, userId);
-            ensureLeaderTuple(teamId, userId);
-        } else {
-            // 3b. 降为成员：仅删除 leader 补充元组，保留 member 基底元组
-            List<RelationTuple> tuples = relationTupleService.listTuples(
-                    SUBJECT_TYPE_USER, String.valueOf(userId),
-                    RESOURCE_TYPE_TEAM, String.valueOf(teamId));
-            for (RelationTuple tuple : tuples) {
-                if (RELATION_LEADER.equals(tuple.getRelation())) {
-                    relationTupleService.deleteTuple(tuple.getId());
-                }
-            }
-        }
+        // 3. 更新角色（member / leader 互斥，单条记录承载）
+        member.setTeamRole(role);
+        teamMemberMapper.updateById(member);
     }
 
     /**
-     * 校验团队成员是否已持有 member 基底元组。
+     * 查询指定团队内某用户的成员记录。
      *
      * @param teamId 团队主键
      * @param userId 用户主键
-     * @return 持有返回 true，否则 false
+     * @return 成员记录，不存在返回 null
      */
-    private boolean hasMemberTuple(Long teamId, Long userId) {
-        return findTuple(teamId, userId, RELATION_MEMBER) != null;
-    }
-
-    /**
-     * 确保某成员持有 member 基底元组（不存在则创建）。
-     *
-     * @param teamId 团队主键
-     * @param userId 用户主键
-     */
-    private void ensureMemberTuple(Long teamId, Long userId) {
-        if (hasTuple(teamId, userId, RELATION_MEMBER)) {
-            return;
-        }
-        createTypedTuple(teamId, userId, RELATION_MEMBER);
-    }
-
-    /**
-     * 确保某成员持有 leader 补充元组（不存在则创建）。
-     *
-     * @param teamId 团队主键
-     * @param userId 用户主键
-     */
-    private void ensureLeaderTuple(Long teamId, Long userId) {
-        if (hasTuple(teamId, userId, RELATION_LEADER)) {
-            return;
-        }
-        createTypedTuple(teamId, userId, RELATION_LEADER);
-    }
-
-    /**
-     * 查询指定团队内某用户持有指定关系的元组。
-     *
-     * @param teamId   团队主键
-     * @param userId   用户主键
-     * @param relation 目标关系名（member / leader）
-     * @return 命中的元组，不存在返回 null
-     */
-    private RelationTuple findTuple(Long teamId, Long userId, String relation) {
-        return relationTupleService.listTuples(
-                        SUBJECT_TYPE_USER, String.valueOf(userId),
-                        RESOURCE_TYPE_TEAM, String.valueOf(teamId))
-                .stream()
-                .filter(t -> relation.equals(t.getRelation()))
-                .findFirst()
-                .orElse(null);
-    }
-
-    /**
-     * 判断某用户是否已在团队内持有指定关系元组。
-     *
-     * @param teamId   团队主键
-     * @param userId   用户主键
-     * @param relation 目标关系名（member / leader）
-     * @return 持有返回 true，否则 false
-     */
-    private boolean hasTuple(Long teamId, Long userId, String relation) {
-        return findTuple(teamId, userId, relation) != null;
-    }
-
-    /**
-     * 创建一条团队-用户成员关系元组。
-     *
-     * @param teamId   团队主键
-     * @param userId   用户主键
-     * @param relation 关系名（member / leader）
-     */
-    private void createTypedTuple(Long teamId, Long userId, String relation) {
-        RelationTupleCreateDTO dto = new RelationTupleCreateDTO();
-        dto.setResourceType(RESOURCE_TYPE_TEAM);
-        dto.setResourceId(String.valueOf(teamId));
-        dto.setRelation(relation);
-        dto.setSubjectType(SUBJECT_TYPE_USER);
-        dto.setSubjectId(String.valueOf(userId));
-        // subjectRelation 留空：主体为具体用户（非 Userset 集合）
-        relationTupleService.createTuple(dto);
+    private TeamMember findMember(Long teamId, Long userId) {
+        return teamMemberMapper.selectOne(new LambdaQueryWrapper<TeamMember>()
+                .eq(TeamMember::getTeamId, teamId)
+                .eq(TeamMember::getUserId, userId));
     }
 }

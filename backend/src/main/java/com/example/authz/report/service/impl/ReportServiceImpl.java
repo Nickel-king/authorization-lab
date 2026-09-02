@@ -1,14 +1,10 @@
 package com.example.authz.report.service.impl;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.example.authz.common.enums.ResourceTypeEnum;
-import com.example.authz.common.event.ResourceCreatedEvent;
-import com.example.authz.common.event.ResourceDeletedEvent;
 import com.example.authz.report.entity.Report;
 import com.example.authz.report.mapper.ReportMapper;
 import com.example.authz.report.service.ReportService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,9 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>
  * 基于 {@link ServiceImpl} + {@link ReportMapper}，
  * 提供报表资源的基础 CRUD 能力，供报表控制器使用。
- * <p>
- * 创建报表成功后发布 {@link ResourceCreatedEvent}，由授权层监听器
- * 自动预置“创建者即属主”等 ReBAC 元组，业务层无需手工配置授权关系。
+ * 报表数据权限由 ABAC 策略引擎负责，业务层不感知授权细节。
  *
  * @author Nickel
  * @since 2026-08-29
@@ -29,9 +23,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class ReportServiceImpl
         extends ServiceImpl<ReportMapper, Report>
         implements ReportService {
-
-    /** 应用事件发布器：创建报表时发布领域事件，触发授权层元组预置 */
-    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * {@inheritDoc}
@@ -45,15 +36,6 @@ public class ReportServiceImpl
         report.setCreatedAt(null);
 
         save(report);
-
-        // 发布资源创建领域事件，由授权层 RelationTupleProvisionListener
-        // 同事务自动预置“创建者即属主”等基础元组（业务层不再手工配元组）
-        eventPublisher.publishEvent(new ResourceCreatedEvent(
-                ResourceTypeEnum.REPORT.getValue(),
-                String.valueOf(report.getId()),
-                report.getCreatedBy(),
-                report.getDepartment()
-        ));
 
         return report;
     }
@@ -70,14 +52,7 @@ public class ReportServiceImpl
             throw new IllegalArgumentException("报表不存在: id=" + id);
         }
 
-        // 2. 发布资源删除领域事件，由授权层 RelationTupleCleanupListener
-        //    同事务清理该报表的 ReBAC 关系元组（业务层不再直接操作元组表）
-        eventPublisher.publishEvent(new ResourceDeletedEvent(
-                ResourceTypeEnum.REPORT.getValue(),
-                String.valueOf(id)
-        ));
-
-        // 3. 删除报表本体
+        // 2. 删除报表本体
         removeById(id);
     }
 }

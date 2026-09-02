@@ -2,9 +2,7 @@ package com.example.authz.authorization.policy;
 
 import com.example.authz.authorization.explain.ConditionTrace;
 import com.example.authz.authorization.policy.entity.PolicyCondition;
-import com.example.authz.authorization.rebac.RelationGraphResolver;
 import com.example.authz.common.enums.OperatorEnum;
-import com.example.authz.common.enums.ResourceTypeEnum;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -24,9 +22,8 @@ import java.util.Objects;
  * 进行求值，返回带评估轨迹（{@link com.example.authz.authorization.explain.ConditionTrace}）
  * 的结果，以便上层进行决策可解释性展示。
  * <p>
- * 除常规的比较运算符（EQUALS / NOT_EQUALS / CONTAINS / STARTS_WITH / ENDS_WITH / IN）
- * 外，还支持 ReBAC 关系运算符 HAS_RELATION：通过
- * {@link RelationGraphResolver} 在关系图上判断主体与资源是否具备目标关系。
+ * 仅支持标准 ABAC 属性比较运算符（EQUALS / NOT_EQUALS / CONTAINS / STARTS_WITH /
+ * ENDS_WITH / IN），左右操作数均来自评估上下文的业务实体属性，不依赖任何关系元组。
  *
  * @author Nickel
  * @since 2026-08-28
@@ -34,10 +31,6 @@ import java.util.Objects;
 @Component
 @RequiredArgsConstructor
 public class ConditionEvaluator {
-
-    /** 关系图求解器，用于 HAS_RELATION 关系判断 */
-    private final RelationGraphResolver
-            relationGraphResolver;
 
     /**
      * 求值单个策略条件并返回评估轨迹。
@@ -52,60 +45,17 @@ public class ConditionEvaluator {
     ) {
 
         String operator = condition.getOperator();
-        OperatorEnum operatorEnum = OperatorEnum.fromValue(operator);
 
         boolean matched;
         Object left;
         Object right;
 
-        // 依据运算符分发：HAS_RELATION 走 ReBAC 关系图判断，其余走属性比较
-        switch (operatorEnum) {
-
-            case HAS_RELATION -> {
-                // 关系判断：left 通常为 SUBJECT.id，
-                // right 为目标关系名（如 "collaborator" / "owner"）
-                left = AttributeResolver.resolve(
-                        context,
-                        condition.getAttributeSource(),
-                        condition.getAttributePath()
-                );
-
-                right = condition.getValue();
-
-                Map<String, Object> resource =
-                        context.getResource();
-
-                String resourceType =
-                        resource.get("type") != null
-                                ? String.valueOf(
-                                        resource.get("type")
-                                )
-                                : ResourceTypeEnum.PROJECT.getValue();
-
-                String resourceId = String.valueOf(
-                        resource.get("id")
-                );
-
-                matched = left != null
-                        && resourceId != null
-                        && relationGraphResolver.checkRelation(
-                                resourceType,
-                                resourceId,
-                                String.valueOf(right),
-                                ResourceTypeEnum.USER.getValue(),
-                                String.valueOf(left)
-                        );
-            }
-
-            case null, default -> {
-                // ABAC 属性比较路径：左右操作数均来自评估上下文的
-                // 主体/资源属性，不查询 auth_relation_tuple（与 HAS_RELATION 本质区别）
-                AttributeComparison cmp = compareAttribute(condition, context, operator);
-                left = cmp.left;
-                right = cmp.right;
-                matched = cmp.matched;
-            }
-        }
+        // ABAC 属性比较路径：左右操作数均来自评估上下文的
+        // 主体/资源属性，不查询任何关系元组（系统仅保留 RBAC + ABAC）。
+        AttributeComparison cmp = compareAttribute(condition, context, operator);
+        left = cmp.left;
+        right = cmp.right;
+        matched = cmp.matched;
 
         String leftExpr =
                 condition.getAttributeSource()
@@ -252,9 +202,8 @@ public class ConditionEvaluator {
      * 左值为来源（如 {@code SUBJECT.id}）属性，右值经
      * {@link #resolveRightValue} 解析——当 RHS 为属性引用时，
      * 例如 {@code RESOURCE.creator_id} / {@code RESOURCE.owner_id}，
-     * 直接读取 {@code EvaluationContext.resource} 中业务实体暴露的字段，
-     * <b>不查询 auth_relation_tuple</b>。这使“创建者/属主”这类隐式关系
-     * 得以通过纯 ABAC 属性比较表达，摆脱对元组表的手工预置依赖。
+     * 直接读取 {@code EvaluationContext.resource} 中业务实体暴露的字段。
+     * 这使“创建者/属主”这类隐式关系得以通过纯 ABAC 属性比较表达。
      *
      * @param condition 策略条件
      * @param context   评估上下文

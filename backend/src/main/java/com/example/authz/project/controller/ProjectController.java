@@ -10,16 +10,9 @@ import com.example.authz.common.ApiResponse;
 import com.example.authz.project.entity.Project;
 import com.example.authz.project.service.ProjectService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
-import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,9 +39,6 @@ public class ProjectController {
 
     /** 数据权限服务，用于生成列表查询的 SQL 过滤条件 */
     private final DataScopeService dataScopeService;
-
-    /** JDBC 模板，用于诊断端点直接查询数据库（绕过 MyBatis-Plus） */
-    private final JdbcTemplate jdbcTemplate;
 
     /**
      * 查看项目列表。
@@ -110,8 +100,7 @@ public class ProjectController {
             throw new IllegalArgumentException("项目属主不能为空");
         }
 
-        // 委托服务创建：内部发布 ResourceCreatedEvent，
-        // 由授权层监听器自动预置“创建者即属主”等 ReBAC 元组
+        // 委托服务创建项目（仅做业务字段落库）
         Project saved = projectService.createProject(project);
         return ApiResponse.success(saved.getId());
     }
@@ -203,9 +192,6 @@ public class ProjectController {
 
     /**
      * 删除项目。
-     * <p>
-     * 委托 {@link ProjectService#deleteProject}，删除时发布领域事件，
-     * 由授权层监听器自动清理相关 ReBAC 关系元组。
      *
      * @param id 项目 ID
      * @return 操作成功
@@ -214,133 +200,5 @@ public class ProjectController {
     public ApiResponse<Void> delete(@PathVariable Long id) {
         projectService.deleteProject(id);
         return ApiResponse.success();
-    }
-
-    // ==================== 诊断端点（临时，排查完毕后删除） ====================
-
-    /**
-     * 诊断 1：直接查元组表原始数据。
-     * 返回 resource_id / subject_id 的实际值 + 长度 + 字符码点，
-     * 看是否存在隐藏空格、BOM、或前端存值格式异常。
-     */
-    @GetMapping("/_diag/tuples")
-    public ApiResponse<List<Map<String, Object>>> diagTuples() {
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT id, resource_type, resource_id, "
-                        + "LENGTH(resource_id) AS rid_len, "
-                        + "LEFT(resource_id, 10) AS rid_prefix, "
-                        + "subject_type, subject_id, "
-                        + "LENGTH(subject_id) AS sid_len, "
-                        + "LEFT(subject_id, 10) AS sid_prefix, "
-                        + "relation, subject_relation "
-                        + "FROM auth_relation_tuple ORDER BY id"
-        );
-        return ApiResponse.success(rows);
-    }
-
-    /**
-     * 诊断 2：生成 + 直接用 JDBC 执行后端列表查询的 SQL。
-     * 对比 MyBatis-Plus 执行结果，定位参数绑定问题。
-     */
-    @GetMapping("/_diag/list-sql")
-    public ApiResponse<Map<String, Object>> diagListSql(
-            @RequestParam(required = false) Long currentUserId
-    ) throws Exception {
-
-        Long userId = currentUserId != null ? currentUserId : 2L;
-        SqlFilterResult filter = dataScopeService.getSqlFilter(userId, "project", "read");
-
-        // —— 方式 A：直接 JDBC 执行 ——
-        List<Object> jdbcParams = new ArrayList<>();
-        String jdbcSql = expandPlaceholders(filter.sql(), filter.params(), jdbcParams);
-        // 诊断端点用别名 p，需要把 jdbcSql 里的 project.id 替换成 p.id
-        jdbcSql = jdbcSql.replace("CAST(project.id AS VARCHAR)", "CAST(p.id AS VARCHAR)");
-
-        List<Map<String, Object>> jdbcRows = new ArrayList<>();
-        try (Connection conn = jdbcTemplate.getDataSource().getConnection();
-             PreparedStatement ps = conn.prepareStatement("SELECT p.* FROM project p WHERE " + jdbcSql)) {
-            for (int i = 0; i < jdbcParams.size(); i++) {
-                ps.setObject(i + 1, jdbcParams.get(i));
-            }
-            try (ResultSet rs = ps.executeQuery()) {
-                ResultSetMetaData md = rs.getMetaData();
-                int colCount = md.getColumnCount();
-                while (rs.next()) {
-                    Map<String, Object> row = new HashMap<>();
-                    for (int c = 1; c <= colCount; c++) {
-                        row.put(md.getColumnName(c), rs.getObject(c));
-                    }
-                    jdbcRows.add(row);
-                }
-            }
-        }
-
-        // —— 方式 B：MyBatis-Plus QueryWrapper（正常流程，直接传 filter.sql() + params）——
-        QueryWrapper<Project> wrapper = new QueryWrapper<>();
-        if (filter.params().isEmpty()) {
-            wrapper.apply(filter.sql());
-        } else {
-            wrapper.apply(filter.sql(), filter.params().toArray());
-        }
-        List<Project> mpRows = projectService.list(wrapper);
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("userId", userId);
-        result.put("rawSql", filter.sql());
-        result.put("jdbcSql", jdbcSql);
-        result.put("bindParams", jdbcParams);
-        result.put("displaySql", filter.displaySql());
-        result.put("jdbcRowsCount", jdbcRows.size());
-        result.put("jdbcRows", jdbcRows);
-        result.put("mpRowsCount", mpRows.size());
-        // --- 额外：不加 filter 的全表（调试用） ---
-List<Project> allRows = projectService.list(new QueryWrapper<>());
-// --- 直接检查 member EXISTS ---
-String checkSql = "SELECT id FROM project p WHERE EXISTS (SELECT 1 FROM auth_relation_tuple t WHERE t.resource_type='project' AND t.resource_id = CAST(p.id AS VARCHAR) AND t.relation = 'member' AND t.subject_type = 'user' AND t.subject_id = '2')";
-List<Map<String, Object>> memberProjects = jdbcTemplate.queryForList(checkSql);
-result.put("memberProjects", memberProjects);
-result.put("allRowsNoFilter", allRows);
-result.put("mpRows", mpRows);
-        return ApiResponse.success(result);
-    }
-
-    // ==================== 工具方法 ====================
-
-    /**
-     * 将 PolicyToSqlCompiler 的 {n} 占位符 SQL 转换为 JDBC ? 占位符，
-     * 同时把 params 列表按引用次数展开——同一个 {n} 出现几次就放几次值。
-     * 例如：sql = "{0} AND {1} ... {1}", params = [member, 2]
-     * → 返回 "? AND ? ... ?", outParams = [member, 2, 2]
-     */
-    static String expandPlaceholders(String sql, List<Object> params, List<Object> outParams) {
-        StringBuilder sb = new StringBuilder();
-        int i = 0;
-        while (i < sql.length()) {
-            int braceOpen = sql.indexOf('{', i);
-            if (braceOpen < 0) {
-                sb.append(sql, i, sql.length());
-                break;
-            }
-            sb.append(sql, i, braceOpen);
-            int braceClose = sql.indexOf('}', braceOpen);
-            if (braceClose < 0) {
-                sb.append(sql, braceOpen, sql.length());
-                break;
-            }
-            String numStr = sql.substring(braceOpen + 1, braceClose);
-            try {
-                int idx = Integer.parseInt(numStr);
-                if (idx >= 0 && idx < params.size()) {
-                    outParams.add(params.get(idx));
-                    sb.append('?');
-                } else {
-                    sb.append(sql, braceOpen, braceClose + 1);
-                }
-            } catch (NumberFormatException ex) {
-                sb.append(sql, braceOpen, braceClose + 1);
-            }
-            i = braceClose + 1;
-        }
-        return sb.toString();
     }
 }

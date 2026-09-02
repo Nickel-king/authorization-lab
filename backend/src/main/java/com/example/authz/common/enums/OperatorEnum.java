@@ -17,8 +17,6 @@ public enum OperatorEnum {
     NOT_EQUALS("NOT_EQUALS"),
     /** 属于集合 */
     IN("IN"),
-    /** ReBAC 关系判断：主体与资源存在目标关系 */
-    HAS_RELATION("HAS_RELATION"),
     /** 包含 */
     CONTAINS("CONTAINS"),
     /** 前缀匹配 */
@@ -34,7 +32,7 @@ public enum OperatorEnum {
     }
 
     /**
-     * 返回枚举对应的字符串值（如 {@code "HAS_RELATION"}）。
+     * 返回枚举对应的字符串值（如 {@code "EQUALS"}）。
      *
      * @return 字符串值
      */

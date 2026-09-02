@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
  * <p>
  * 对应数据库表 {@code report}，描述可被授权的报表业务资源，
  * 含密级等级（security_level）与所属部门（department），
- * 用于 RBAC / ABAC / ReBAC 策略评估与数据权限过滤。
+ * 用于 RBAC / ABAC 策略评估与数据权限过滤。
  *
  * @author Nickel
  * @since 2026-08-29

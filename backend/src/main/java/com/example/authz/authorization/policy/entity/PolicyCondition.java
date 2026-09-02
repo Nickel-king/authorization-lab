@@ -34,7 +34,7 @@ public class PolicyCondition {
     /** 属性路径，如 department、ownerId */
     private String attributePath;
 
-    /** 比较运算符：EQUALS / NOT_EQUALS / CONTAINS / HAS_RELATION 等 */
+    /** 比较运算符：EQUALS / NOT_EQUALS / CONTAINS / STARTS_WITH / ENDS_WITH / IN */
     private String operator;
 
     /** 右操作数来源：LITERAL（字面量）/ ATTRIBUTE（另一个属性） */

@@ -6,8 +6,6 @@ import com.example.authz.authorization.policy.PolicyService;
 import com.example.authz.authorization.policy.entity.Policy;
 import com.example.authz.authorization.policy.entity.PolicyCondition;
 import com.example.authz.common.enums.OperatorEnum;
-import com.example.authz.common.enums.RelationEnum;
-import com.example.authz.common.enums.ResourceTypeEnum;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -29,11 +27,8 @@ import java.util.Set;
  * 合并规则：Policy 之间用 OR；Policy 内条件按 AST 逻辑树组合
  * （支持 {@code (A AND B) OR C} 的嵌套分组），顶层节点之间用 AND。
  * <p>
- * 支持两种条件下推：
- * <ul>
- *   <li>ReBAC 关系：HAS_RELATION → 生成关联 EXISTS 子查询（避免大表 IN 列表）</li>
- *   <li>ABAC 属性相等：SUBJECT.attr == RESOURCE.attr → {@code <column> = '<值>'}</li>
- * </ul>
+ * 仅支持 ABAC 属性等值下推：{@code SUBJECT.attr == RESOURCE.attr} → {@code <column> = '<值>'}。
+ * 其余运算符/取值方式无法下推时返回 null，整条策略将放弃下推并回退为恒假。
  *
  * @author Nickel
  * @since 2026-08-29
@@ -186,36 +181,7 @@ public class PolicyToSqlCompiler {
 
         String operator = cond.getOperator();
 
-        // 1. ReBAC 关系下推：SUBJECT.id HAS_RELATION 'collaborator'
-        //    采用关联 EXISTS 子查询，取代“内存中反向推导全部资源 id → id IN (…)”
-        //    的大列表下推，避免海量资源场景下 SQL 过长、索引失效。
-        //    动态值（目标关系、当前用户 ID）以占位符参数绑定，防止 SQL 注入。
-        if (OperatorEnum.HAS_RELATION == OperatorEnum.fromValue(operator)) {
-
-            // 取当前主体 ID（如 user 的 id），作为关系子查询的关联入参
-            Object subjectIdValue = AttributeResolver.resolve(
-                    context,
-                    cond.getAttributeSource(),
-                    cond.getAttributePath()
-            );
-            if (subjectIdValue == null) {
-                return "1 = 0";
-            }
-
-            String targetRelation = cond.getValue();
-            if (!StringUtils.hasText(targetRelation)) {
-                return null;
-            }
-
-            return buildRelationExistsSql(
-                    resource,
-                    targetRelation,
-                    String.valueOf(subjectIdValue),
-                    bindParams
-            );
-        }
-
-        // 2. ABAC 属性比较下推：SUBJECT.attr == RESOURCE.attr
+        // 1. ABAC 属性比较下推：SUBJECT.attr == RESOURCE.attr
         if ("SUBJECT".equalsIgnoreCase(cond.getAttributeSource())
                 && "ATTRIBUTE".equalsIgnoreCase(cond.getValueSource())
                 && cond.getValue() != null
@@ -306,84 +272,6 @@ public class PolicyToSqlCompiler {
 
         // 2. 叶子比较条件：复用单条件编译
         return compileCondition(node, resource, context, bindParams);
-    }
-
-    /**
-     * 生成 HAS_RELATION 条件的关联 EXISTS 子查询。
-     * <p>
-     * 与主表按资源主键（{@code <resource>.id}）关联，判断该资源上是否存在
-     * 主体（当前用户）具备目标关系的元组。相比在内存中反推全部可访问
-     * 资源 id 并拼 {@code id IN (1,2,…,10000)}，EXISTS 将过滤下推到数据库，
-     * 大大减小下推子句体积、便于索引命中。
-     * <p>
-     * 覆盖两类命中（与关系图模型一致）：
-     * <ul>
-     *   <li>直接授权：{@code project:3#collaborator@user:1}（subject_relation 为空）</li>
-     *   <li>团队 Userset 继承：{@code project:3#collaborator@team:1#member}
-     *       且用户是该团队 member（一层嵌套）</li>
-     * </ul>
-     * 若业务可能存在更深层多跳嵌套，需改为递归 CTE；当前模型仅一层即可。
-     * <p>
-     * 安全说明：动态值（目标关系 {@code relation}、当前用户 {@code userId}）
-     * 均以 {@code {n}} 占位符占位并登记到 {@code bindParams}，由调用方参数绑定，
-     * 不做字符串拼接，从根本上防范 SQL 注入。资源类型/表名属于应用层
-     * 路由配置（非用户自由注入），作为标识符保留字面量。
-     *
-     * @param resource   资源类型（同时是主表名，如 project / report）
-     * @param relation   目标关系名，如 collaborator
-     * @param userId     当前主体用户 ID
-     * @param bindParams 参数绑定值列表（追加本次占位符对应的值）
-     * @return EXISTS 相关子查询 SQL 片段（含 {@code {n}} 占位符）
-     */
-    private String buildRelationExistsSql(
-            String resource,
-            String relation,
-            String userId,
-            List<Object> bindParams
-    ) {
-
-        // 常量：团队主体类型与成员嵌套关系（与本项目 ReBAC 模型一致）
-        final String teamType = ResourceTypeEnum.TEAM.getValue();
-        final String memberRel = RelationEnum.MEMBER.getValue();
-
-        // 目标关系名、当前用户 ID 作为绑定参数（防注入）
-        String relPlaceholder = addParam(bindParams, relation);
-        String uidPlaceholder = addParam(bindParams, userId);
-
-        return "EXISTS (SELECT 1 FROM auth_relation_tuple t "
-                + "WHERE t.resource_type = '" + resource + "' "
-                // 主表资源主键（project.id / report.id）与元组资源 ID 关联
-                + "AND t.resource_id = CAST(" + resource + ".id AS VARCHAR) "
-                + "AND t.relation = " + relPlaceholder + " "
-                + "AND ( "
-                // 直接授权：主语即该用户（subject_relation 为 NULL 或空字符串都算直接授权）
-                + "(t.subject_type = 'user' AND t.subject_id = " + uidPlaceholder + " "
-                + "AND (t.subject_relation IS NULL OR t.subject_relation = '')) "
-                + "OR "
-                // 团队 Userset：主语的团队是 member，且该团队确实包含该用户
-                + "(t.subject_type = '" + teamType + "' "
-                + "AND t.subject_relation = '" + memberRel + "' "
-                + "AND EXISTS (SELECT 1 FROM auth_relation_tuple tm "
-                + "WHERE tm.resource_type = '" + teamType + "' "
-                + "AND tm.resource_id = t.subject_id "
-                + "AND tm.relation = '" + memberRel + "' "
-                + "AND tm.subject_type = 'user' AND tm.subject_id = " + uidPlaceholder + " "
-                + "AND (tm.subject_relation IS NULL OR tm.subject_relation = ''))) "
-                + "))";
-    }
-
-    /**
-     * 登记一个参数绑定值，并返回其在 SQL 中的 {@code {n}} 占位符。
-     * <p>
-     * 占位符下标即当前参数列表的下标，保证与绑定值严格一一对应。
-     *
-     * @param bindParams 参数绑定值列表
-     * @param value      待绑定的参数值
-     * @return 形如 {@code {0}} / {@code {1}} 的占位符
-     */
-    private String addParam(List<Object> bindParams, Object value) {
-        bindParams.add(value);
-        return "{" + (bindParams.size() - 1) + "}";
     }
 
     /**

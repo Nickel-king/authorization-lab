@@ -5,20 +5,22 @@
  * 统一弹窗选择 ReBAC 主体（Subject），供各种资源协作授权场景复用：
  *   - Tab1 👤 Users：按姓名 / 用户名 / ID 搜索用户，选中即主体为 user；
  *   - Tab2 👥 Teams：选择已有团队，团队以 Userset 形式作为主体，
- *     其嵌套子关系 subjectRelation 按约定填 teamSubjectRelation（默认 member）。
+ *     其嵌套子关系 subjectRelation 按约定填 teamSubjectRelation（默认 member）；
+ *   - Tab3 🏢 Departments：选择部门（组织层级节点）作为主体（dept）。
  *
- * 数据源仅依赖两个可选 loader（loadUsers / loadTeams，默认走 sys_user / sys_team），
- * 业务方可传入自实现 loader 覆盖，实现完全解耦。
+ * 数据源仅依赖可选 loader（loadUsers / loadTeams / loadDepartments，
+ * 默认走 sys_user / sys_team / sys_department），业务方可传入自实现 loader 覆盖。
  *
- * 输出统一结构：emit('select', { subjectType: 'user'|'team', subjectId: string, subjectRelation: string|null })
+ * 输出统一结构：emit('select', { subjectType: 'user'|'team'|'dept', subjectId: string, subjectRelation: string|null })
  *
  * @author Nickel
  * @since 2026-08-29
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import { Search, UsersRound, UserRound, Building2, Check } from 'lucide-vue-next'
+import { Search, UsersRound, UserRound, Building2, Landmark, Check } from 'lucide-vue-next'
 import { fetchUsers } from '@/api/user'
 import { fetchTeams } from '@/api/team'
+import { fetchDepartments } from '@/api/department'
 
 // ---- 组件入参 ----
 const props = defineProps({
@@ -28,6 +30,8 @@ const props = defineProps({
   loadUsers: { type: Function, default: null },
   // 团队候选 loader（可选覆盖，默认 fetchTeams）
   loadTeams: { type: Function, default: null },
+  // 部门候选 loader（可选覆盖，默认 fetchDepartments，返回组织树）
+  loadDepartments: { type: Function, default: null },
   // 团队作为主体时的嵌套子关系（ReBAC Userset 约定，默认 member）
   teamSubjectRelation: { type: String, default: 'member' }
 })
@@ -36,17 +40,19 @@ const props = defineProps({
 // update:modelValue 同步可见性；select 抛出选中的主体对象
 const emit = defineEmits(['update:modelValue', 'select'])
 
-// 当前活动 Tab（user | team）
+// 当前活动 Tab（user | team | dept）
 const activeTab = ref('user')
 
 // 候选清单与加载态
 const users = ref([])
 const teams = ref([])
+const depts = ref([])
 const loading = ref(false)
 
-// 两个 Tab 各自的搜索关键词
+// 三个 Tab 各自的搜索关键词
 const userKeyword = ref('')
 const teamKeyword = ref('')
+const deptKeyword = ref('')
 
 // 用户搜索：按显示名 / 用户名 / ID 模糊匹配
 const filteredUsers = computed(() => {
@@ -71,6 +77,27 @@ const filteredTeams = computed(() => {
   )
 })
 
+/** 部门树拍平为可搜索列表（保留层级缩进提示） */
+const flattenDeptTree = (nodes, depth = 0, out = []) => {
+  for (const n of nodes || []) {
+    out.push({ ...n, _depth: depth })
+    if (n.children?.length) flattenDeptTree(n.children, depth + 1, out)
+  }
+  return out
+}
+
+// 部门搜索：按名称 / 编码模糊匹配
+const filteredDepts = computed(() => {
+  const kw = deptKeyword.value.trim().toLowerCase()
+  const flat = flattenDeptTree(depts.value)
+  if (!kw) return flat
+  return flat.filter(
+    (d) =>
+      (d.name || '').toLowerCase().includes(kw) ||
+      (d.code || '').toLowerCase().includes(kw)
+  )
+})
+
 // 首次挂载加载候选（打开时再按需刷新）
 onMounted(() => loadCandidates())
 
@@ -82,24 +109,27 @@ watch(
     activeTab.value = 'user'
     userKeyword.value = ''
     teamKeyword.value = ''
+    deptKeyword.value = ''
     loadCandidates()
   }
 )
 
 /**
- * 并行加载用户与团队候选。
+ * 并行加载用户 / 团队 / 部门候选。
  * <p>使用父级传入的 loader（若可用），否则使用默认 API。</p>
  */
 const loadCandidates = async () => {
   loading.value = true
   try {
-    // 并行拉取两类候选，任一失败不影响另一侧
-    const [u, t] = await Promise.all([
+    // 并行拉取三类候选，任一失败不影响其他侧
+    const [u, t, d] = await Promise.all([
       loadUserCandidates().catch(() => []),
-      loadTeamCandidates().catch(() => [])
+      loadTeamCandidates().catch(() => []),
+      loadDeptCandidates().catch(() => [])
     ])
     users.value = u
     teams.value = t
+    depts.value = d
   } finally {
     loading.value = false
   }
@@ -115,6 +145,13 @@ const loadUserCandidates = async () => {
 /** 加载团队候选（可被父级 loader 覆盖） */
 const loadTeamCandidates = async () => {
   const loader = props.loadTeams || fetchTeams
+  const list = (await loader()) || []
+  return Array.isArray(list) ? list : []
+}
+
+/** 加载部门候选（可被父级 loader 覆盖，返回组织树） */
+const loadDeptCandidates = async () => {
+  const loader = props.loadDepartments || fetchDepartments
   const list = (await loader()) || []
   return Array.isArray(list) ? list : []
 }
@@ -138,10 +175,19 @@ const pickTeam = (t) => {
 }
 
 /**
+ * 选中某个部门主体。
+ * @param {object} d 部门节点（含 id / name / code）
+ */
+const pickDept = (d) => {
+  // 部门为组织层级节点，作为原子主体集合，subjectRelation 恒为 null
+  emitSelect('dept', String(d.id), null, d.name)
+}
+
+/**
  * 组装选中结果并抛给父级、关闭弹窗。
- * @param {string} subjectType 主体类型 user | team
+ * @param {string} subjectType 主体类型 user | team | dept
  * @param {string} subjectId   主体 ID
- * @param {string|null} subjectRelation 主体嵌套子关系（用户为空、团队为 member）
+ * @param {string|null} subjectRelation 主体嵌套子关系（用户/部门为空、团队为 member）
  * @param {string} _label 主体展示名（仅用于父级回显，不参与元组结构）
  */
 const emitSelect = (subjectType, subjectId, subjectRelation, _label) => {
@@ -240,11 +286,52 @@ const emitSelect = (subjectType, subjectId, subjectRelation, _label) => {
           </div>
         </div>
       </el-tab-pane>
+
+      <!-- Tab3：部门 -->
+      <el-tab-pane name="dept">
+        <template #label>
+          <span class="inline-flex items-center gap-1"><Landmark class="h-3.5 w-3.5" /> 部门</span>
+        </template>
+        <!-- 部门搜索框 -->
+        <el-input
+          v-model="deptKeyword"
+          size="small"
+          :prefix-icon="Search"
+          placeholder="按部门名称 / 编码搜索"
+          class="mb-2"
+        />
+        <!-- 部门候选列表（按组织层级缩进展示） -->
+        <div class="max-h-80 overflow-y-auto rounded-md border border-slate-100">
+          <div
+            v-for="d in filteredDepts"
+            :key="d.id"
+            class="flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-indigo-50"
+            :style="{ paddingLeft: (12 + d._depth * 16) + 'px' }"
+            @click="pickDept(d)"
+          >
+            <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-100">
+              <Landmark class="h-4 w-4 text-violet-600" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-medium text-slate-700">{{ d.name }}</div>
+              <div class="text-xs text-slate-400">
+                <code class="rounded bg-slate-100 px-1 py-0.5">{{ d.code }}</code> · dept:{{ d.id }}
+              </div>
+            </div>
+            <Check class="h-4 w-4 text-indigo-500" />
+          </div>
+          <!-- 空态提示 -->
+          <div v-if="!filteredDepts.length" class="py-8 text-center text-xs text-slate-400">
+            {{ loading ? '加载中…' : '未找到匹配的部门' }}
+          </div>
+        </div>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 底部说明 -->
     <div class="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-xs text-slate-400">
-      💡 选中 <b>用户</b> 为原子主体；选中 <b>团队</b> 将按「团队成员」语义授权，团队成员自动继承。
+      💡 选中 <b>用户</b> 为原子主体；选中 <b>团队</b> 将按「团队成员」语义授权，团队成员自动继承；
+      选中 <b>部门</b> 将按「部门成员」语义授权，部门层级子节点自动继承。
     </div>
   </el-dialog>
 </template>

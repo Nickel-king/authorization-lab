@@ -104,8 +104,7 @@ public class ReportController {
             report.setCategory("FINANCIAL");
         }
 
-        // 委托服务创建：内部发布 ResourceCreatedEvent，
-        // 由授权层监听器自动预置“创建者即属主”等 ReBAC 元组
+        // 委托服务创建报表（仅做业务字段落库）
         Report saved = reportService.createReport(report);
         return ApiResponse.success(saved.getId());
     }

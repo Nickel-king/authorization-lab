@@ -50,9 +50,9 @@ const PATH_OPTIONS = {
 
 // 资源属性引用下拉候选（RHS 属性引用）
 // 提供常见业务字段，便于快速配置如 “SUBJECT.id EQUALS RESOURCE.creator_id” 的规则
+// 注：部门字段统一用 resource.department（映射真实列，SQL 下推安全），不重复提供 department_id
 const RESOURCE_ATTR_OPTIONS = [
   { label: '创建人 (RESOURCE.creator_id)', value: 'resource.creator_id' },
-  { label: '归属部门 (RESOURCE.department_id)', value: 'resource.department_id' },
   { label: '所属部门 (RESOURCE.department)', value: 'resource.department' },
   { label: '属主 (RESOURCE.owner_id)', value: 'resource.owner_id' },
   { label: '安全密级 (RESOURCE.security_level)', value: 'resource.security_level' }

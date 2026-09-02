@@ -10,8 +10,8 @@ import java.time.LocalDateTime;
 /**
  * 团队（Team）实体。
  * <p>
- * 对应数据库表 {@code sys_team}，描述 ReBAC 关系图中的团队主体，
- * 供关系图快捷授权与元组管理中作为主体类型 team 使用。
+ * 对应数据库表 {@code sys_team}，描述组织中的团队主体，
+ * 供成员管理页面与授权配置中作为主体类型 team 使用。
  *
  * @author Nickel
  * @since 2026-08-29

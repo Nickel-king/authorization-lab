@@ -10,6 +10,7 @@ import {
 } from 'lucide-vue-next'
 import GraphView from '@/components/GraphView.vue'
 import SubjectPicker from '@/components/SubjectPicker.vue'
+import ResourcePicker from '@/components/ResourcePicker.vue'
 import {
   fetchTuples,
   createTuple,
@@ -19,6 +20,7 @@ import {
 import { fetchProjects, fetchUsers } from '@/api/user'
 import { fetchReports } from '@/api/report'
 import { fetchTeams } from '@/api/team'
+import { fetchDepartments } from '@/api/department'
 
 // 当前视图：table / graph
 const view = ref('table')
@@ -27,6 +29,7 @@ const view = ref('table')
 
 /** 资源类型字典：与后端 resourceType 对齐 */
 const RESOURCE_TYPES = [
+  { value: 'dept', label: '工作区/部门 (dept)' },
   { value: 'project', label: '科研项目 (project)' },
   { value: 'report', label: '报表 (report)' },
   { value: 'team', label: '团队 (team)' }
@@ -47,7 +50,8 @@ const RELATIONS = [
 /** 主体类型字典：与后端 subjectType 对齐 */
 const SUBJECT_TYPES = [
   { value: 'user', label: '用户 (user)' },
-  { value: 'team', label: '团队 (team)' }
+  { value: 'team', label: '团队 (team)' },
+  { value: 'dept', label: '部门 (dept)' }
 ]
 
 /** 实体类型元数据：图标 + 中文名（用于 ID→名称 人类可读徽章） */
@@ -100,6 +104,15 @@ const entityName = (type, id) => {
   return opt ? opt.name : (id == null ? '-' : `#${id}`)
 }
 
+/** 部门组织树拍平为列表（保留层级深度，供徽章/下拉/图谱复用） */
+const flattenDeptTree = (nodes, depth = 0, out = []) => {
+  for (const n of nodes || []) {
+    out.push({ ...n, _depth: depth })
+    if (n.children?.length) flattenDeptTree(n.children, depth + 1, out)
+  }
+  return out
+}
+
 // 元组列表（服务器端数据源）
 const tuples = ref([])
 
@@ -143,13 +156,7 @@ const tupleForm = ref({
 /** SubjectPicker 主体选择弹窗可见性 */
 const pickerVisible = ref(false)
 
-/**
- * 资源下拉选项（随 tupleForm.resourceType 自动联动，缓存命中秒出）
- * <p>由 watch 监听类型变化 → 触发 loadResourceOptions → 写入缓存 → 此 computed 自动更新</p>
- */
-const resourceOptions = computed(() => resourceCache.value[tupleForm.value.resourceType] || [])
-
-/** 监听资源类型变化：自动清空旧 ID + 按需加载新资源列表 */
+/** 监听资源类型变化：自动清空旧 ID + 按需加载新资源列表（预热缓存供徽章解析） */
 watch(
   () => tupleForm.value.resourceType,
   async (newType, oldType) => {
@@ -195,6 +202,11 @@ const loadResourceOptions = async (type) => {
       list = (res.data || res || []).map((t) => ({
         value: String(t.id), label: `Team #${t.id}: ${t.name}`, name: t.name, id: t.id
       }))
+    } else if (type === 'dept') {
+      const res = await fetchDepartments()
+      list = flattenDeptTree(res.data || res || []).map((d) => ({
+        value: String(d.id), label: `${'　'.repeat(d._depth)}🗂️ ${d.name}`, name: d.name, id: d.id
+      }))
     }
     resourceCache.value[type] = list
   } catch (e) {
@@ -230,6 +242,11 @@ const loadSubjectOptions = async (type) => {
         name: t.name,
         id: t.id
       }))
+    } else if (type === 'dept') {
+      const res = await fetchDepartments()
+      list = flattenDeptTree(res.data || res || []).map((d) => ({
+        value: String(d.id), label: `${'　'.repeat(d._depth)}🏢 ${d.name}`, name: d.name, id: d.id
+      }))
     }
     subjectCache.value[type] = list
   } catch (e) {
@@ -242,13 +259,14 @@ const loadSubjectOptions = async (type) => {
 
 /** 预加载项目/团队候选（供快捷授权下拉），并预热抽屉缓存 */
 const loadQuickLookup = async () => {
-  const [p, t, u, r] = await Promise.all([
-    fetchProjects({}), fetchTeams(), fetchUsers({}), fetchReports({})
+  const [p, t, u, r, d] = await Promise.all([
+    fetchProjects({}), fetchTeams(), fetchUsers({}), fetchReports({}), fetchDepartments()
   ])
   projects.value = (p.data || p || [])
   teams.value = (t.data || t || [])
   const users = (u.data || u || [])
   const reports = (r.data || r || [])
+  const depts = flattenDeptTree(d.data || d || [])
   // 同时写入缓存（抽屉首次打开 / 图谱切换就不用再查一次）
   resourceCache.value.project = projects.value.map((p) => ({
     value: String(p.id), label: `Project #${p.id}: ${p.name}`, name: p.name, id: p.id
@@ -259,11 +277,17 @@ const loadQuickLookup = async () => {
   resourceCache.value.report = reports.map((r) => ({
     value: String(r.id), label: `Report #${r.id}: ${r.name}`, name: r.name, id: r.id
   }))
+  resourceCache.value.dept = depts.map((d) => ({
+    value: String(d.id), label: `${'　'.repeat(d._depth)}🗂️ ${d.name}`, name: d.name, id: d.id
+  }))
   subjectCache.value.team = teams.value.map((t) => ({
     value: String(t.id), label: `Team #${t.id}: ${t.name}${t.memberCount ? `（${t.memberCount} 人）` : ''}`, name: t.name, id: t.id
   }))
   subjectCache.value.user = users.map((u) => ({
     value: String(u.id), label: `User #${u.id}: ${u.displayName} (@${u.username})`, name: u.displayName, id: u.id
+  }))
+  subjectCache.value.dept = depts.map((d) => ({
+    value: String(d.id), label: `${'　'.repeat(d._depth)}🏢 ${d.name}`, name: d.name, id: d.id
   }))
 }
 
@@ -373,6 +397,73 @@ const onPickSubject = ({ subjectType, subjectId, subjectRelation }) => {
   tupleForm.value.subjectType = subjectType
   tupleForm.value.subjectId = subjectId
   tupleForm.value.subjectRelation = subjectRelation || ''
+}
+
+// ResourcePicker 选中资源（Workspace 容器 或 具体资源）：回填表单
+const onPickResource = ({ resourceType, resourceId }) => {
+  tupleForm.value.resourceType = resourceType
+  tupleForm.value.resourceId = resourceId
+}
+
+// ResourcePicker 弹窗可见性
+const resourcePickerVisible = ref(false)
+
+// ------------ 图析溯源（Trace / Explain，只读）------------
+
+const traceVisible = ref(false)
+const traceTuple = ref(null)
+const traceGraph = ref({ nodes: [], links: [] })
+
+/**
+ * 构建"单条元组影响范围"的溯源图：
+ *   - 中心边：subject --relation--> resource（本条元组）；
+ *   - 上游：主体为团队/部门时，其成员关系元组（member）；
+ *   - 下游：该元组资源作为其他元组主体集合时，向下继承传播的元组。
+ */
+const buildTraceGraph = (row) => {
+  const nodes = []
+  const links = []
+  const nodeSet = new Map()
+  const addNode = (id, type) => {
+    if (nodeSet.has(id)) return
+    const node = { id, type, name: entityName(type, id.split(':')[1]) }
+    nodeSet.set(id, node)
+    nodes.push(node)
+  }
+  const subjKey = `${row.subjectType}:${row.subjectId}`
+  const resKey = `${row.resourceType}:${row.resourceId}`
+  addNode(subjKey, row.subjectType)
+  addNode(resKey, row.resourceType)
+  links.push({
+    source: subjKey,
+    target: resKey,
+    relation: row.relation,
+    subjectRelation: row.subjectRelation || ''
+  })
+
+  for (const t of tuples.value) {
+    if (t.id === row.id) continue
+    const tSubj = `${t.subjectType}:${t.subjectId}`
+    const tRes = `${t.resourceType}:${t.resourceId}`
+    // 下游：本条元组的资源作为其他元组的主体集合（继承传播）
+    if (tSubj === resKey) {
+      addNode(tRes, t.resourceType)
+      links.push({ source: tSubj, target: tRes, relation: t.relation, subjectRelation: t.subjectRelation || '' })
+    }
+    // 上游：主体为团队/部门时，其成员关系（resource=该主体、relation=member）
+    if (row.subjectType !== 'user' && t.resourceType === row.subjectType && t.resourceId === row.subjectId && t.relation === 'member') {
+      addNode(tSubj, t.subjectType)
+      links.push({ source: tSubj, target: tRes, relation: 'member' })
+    }
+  }
+  return { nodes, links }
+}
+
+// 打开溯源弹窗
+const openTrace = (row) => {
+  traceTuple.value = row
+  traceGraph.value = buildTraceGraph(row)
+  traceVisible.value = true
 }
 
 // 提交新增或编辑
@@ -587,8 +678,11 @@ const graphLinks = computed(() => {
           <el-table-column label="创建时间" min-width="170">
             <template #default="{ row }">{{ row.createdAt }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="150">
+          <el-table-column label="操作" width="220">
             <template #default="{ row }">
+              <el-button size="small" :icon="Network" text type="info" @click="openTrace(row)">
+                溯源
+              </el-button>
               <el-button size="small" :icon="Pencil" text @click="openEdit(row)">编辑</el-button>
               <el-button size="small" :icon="Trash2" text type="danger" @click="onDelete(row.id)">
                 解除
@@ -645,26 +739,28 @@ const graphLinks = computed(() => {
       </el-alert>
 
       <el-form label-width="110px">
-        <el-form-item label="资源类型" required>
-          <el-select v-model="tupleForm.resourceType" style="width: 100%">
-            <el-option v-for="o in RESOURCE_TYPES" :key="o.value" :label="o.label" :value="o.value" />
-          </el-select>
-        </el-form-item>
+        <!-- 资源：使用 ResourcePicker（支持 Workspace 容器 / 具体资源） -->
         <el-form-item label="资源" required>
-          <el-select
-            v-model="tupleForm.resourceId"
-            filterable
-            clearable
-            style="width: 100%"
-            :placeholder="resourceOptions.length ? '选择或搜索资源…' : '请先选择资源类型'"
-          >
-            <el-option
-              v-for="o in resourceOptions"
-              :key="o.value"
-              :label="o.label"
-              :value="o.value"
+          <div class="flex w-full flex-wrap items-center gap-2">
+            <template v-if="tupleForm.resourceId">
+              <span class="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 px-2 py-1 text-xs ring-1 ring-inset ring-emerald-600/10">
+                <span>{{ resourceBadge(tupleForm.resourceType, tupleForm.resourceId).icon }}</span>
+                <span class="text-slate-500">{{ resourceBadge(tupleForm.resourceType, tupleForm.resourceId).zh }}:</span>
+                <span class="font-semibold text-emerald-700">{{ resourceBadge(tupleForm.resourceType, tupleForm.resourceId).name }}</span>
+                <span class="text-[10px] text-slate-400">({{ resourceBadge(tupleForm.resourceType, tupleForm.resourceId).id }})</span>
+                <span v-if="tupleForm.resourceType === 'dept'" class="rounded bg-violet-100 px-1 py-0.5 text-[10px] text-violet-600">
+                  Workspace 容器
+                </span>
+              </span>
+            </template>
+            <el-button size="small" :icon="FolderKanban" @click="resourcePickerVisible = true">
+              {{ tupleForm.resourceId ? '重新选择资源' : '选择资源' }}
+            </el-button>
+            <ResourcePicker
+              v-model="resourcePickerVisible"
+              @select="onPickResource"
             />
-          </el-select>
+          </div>
         </el-form-item>
         <el-form-item label="关系" required>
           <el-select v-model="tupleForm.relation" style="width: 100%">
@@ -703,6 +799,37 @@ const graphLinks = computed(() => {
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="submitTuple">{{ editingTupleId ? '保存修改' : '确认创建' }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 图析溯源弹窗（只读 Explain） -->
+    <el-dialog v-model="traceVisible" title="元组影响范围 · 图析溯源" width="720px">
+      <template v-if="traceTuple">
+        <!-- 中心元组摘要 -->
+        <div class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+          <span class="inline-flex items-center gap-1.5 rounded-md bg-blue-50 px-2 py-0.5 ring-1 ring-inset ring-blue-600/10">
+            {{ subjectBadge(traceTuple.subjectType, traceTuple.subjectId).icon }}
+            {{ subjectBadge(traceTuple.subjectType, traceTuple.subjectId).zh }}:
+            {{ subjectBadge(traceTuple.subjectType, traceTuple.subjectId).name }}
+          </span>
+          <span class="text-indigo-600">--[{{ relationLabel(traceTuple.relation) }}]--></span>
+          <span class="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 px-2 py-0.5 ring-1 ring-inset ring-emerald-600/10">
+            {{ resourceBadge(traceTuple.resourceType, traceTuple.resourceId).icon }}
+            {{ resourceBadge(traceTuple.resourceType, traceTuple.resourceId).zh }}:
+            {{ resourceBadge(traceTuple.resourceType, traceTuple.resourceId).name }}
+          </span>
+        </div>
+
+        <!-- 溯源图 -->
+        <GraphView :nodes="traceGraph.nodes" :links="traceGraph.links" />
+
+        <!-- 说明 -->
+        <p class="mt-2 rounded bg-indigo-50 px-2 py-1.5 text-[11px] text-indigo-600">
+          💡 中心为所选元组；上游展示主体成员关系，下游展示该资源作为主体集合时的继承传播（影响的具体数据）。
+        </p>
+      </template>
+      <template #footer>
+        <el-button @click="traceVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
