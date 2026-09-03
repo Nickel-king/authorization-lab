@@ -40,11 +40,13 @@ public class DataScopeService {
         EvaluationContext context =
                 contextBuilder.build(userId, resource, null);
 
-        // 将主体可匹配的 ALLOW 策略编译为 SQL 下推条件（参数化绑定）
+        // 将主体可匹配的 ALLOW 策略编译为 SQL 下推条件（参数化绑定）。
+        // 该入口无主表别名上下文（MyBatis-Plus 生成单表查询），列名不限定。
         return policyToSqlCompiler.compileToSqlWhereClause(
                 resource,
                 action,
-                context
+                context,
+                ""
         );
     }
 }

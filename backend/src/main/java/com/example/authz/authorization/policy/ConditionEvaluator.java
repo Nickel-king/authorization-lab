@@ -318,15 +318,18 @@ public class ConditionEvaluator {
     }
 
     /**
-     * CONTAINS 判断：支持逗号分隔列表语义。
+     * CONTAINS 判断：支持逗号分隔列表语义（左右对称）。
      * <p>
-     * 当左操作数为逗号分隔列表（如 {@code RESOURCE.member_ids = "1,3"}）时，
-     * 按元素精确匹配右操作数（如 {@code SUBJECT.id = "1"}），避免 "1" 被
-     * 形如 "12" 的元素子串误命中；非列表场景回退为普通子串包含。
+     * 无论逗号分隔列表（如 {@code RESOURCE.member_ids = "1,2,3"}）出现在左值还是右值，
+     * 都按「列表按元素精确匹配另一操作数（如 {@code SUBJECT.id = 2}）」处理，
+     * 避免 "2" 被形如 "12" 的元素子串误命中。与
+     * {@link com.example.authz.authorization.query.PolicyToSqlCompiler}
+     * 的 SQL 下推保持语义一致：{@code member_ids CONTAINS 2} 与
+     * {@code SUBJECT.id CONTAINS resource.member_ids} 结果相同。
      *
-     * @param left  左操作数（待匹配的字符串/逗号分隔列表）
-     * @param right 右操作数（查找项）
-     * @return 左值是否包含右值
+     * @param left  左操作数（字符串 / 逗号分隔列表）
+     * @param right 右操作数（字符串 / 逗号分隔列表）
+     * @return 列表一侧是否包含另一操作数（均非列表时按子串包含）
      */
     private boolean containsMatch(Object left, Object right) {
 
@@ -337,18 +340,38 @@ public class ConditionEvaluator {
         String leftStr = String.valueOf(left);
         String rightStr = String.valueOf(right);
 
-        // 逗号分隔列表：按元素精确匹配
+        // 左值为列表：按元素精确匹配右值
         if (leftStr.contains(",")) {
-            for (String item : leftStr.split(",")) {
-                if (item != null && item.trim().equals(rightStr)) {
-                    return true;
-                }
+            if (!rightStr.contains(",")) {
+                return containsElement(leftStr, rightStr);
             }
+            // 双方均为列表：语义无法确定，保持不命中
             return false;
         }
 
-        // 非列表：回退为普通子串包含
+        // 右值为列表：按元素精确匹配左值（与 SQL 下推语义一致）
+        if (rightStr.contains(",")) {
+            return containsElement(rightStr, leftStr);
+        }
+
+        // 均非列表：回退为普通子串包含
         return leftStr.contains(rightStr);
+    }
+
+    /**
+     * 判断逗号分隔列表 {@code list} 是否包含元素 {@code element}（按元素精确匹配）。
+     *
+     * @param list    逗号分隔字符串，如 "1,2,3"
+     * @param element 待查找的元素，如 "2"
+     * @return 列表是否包含该元素
+     */
+    private boolean containsElement(String list, String element) {
+        for (String item : list.split(",")) {
+            if (item != null && item.trim().equals(element)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

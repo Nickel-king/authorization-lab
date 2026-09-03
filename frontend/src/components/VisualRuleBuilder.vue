@@ -47,17 +47,59 @@ const PATH_OPTIONS = {
   CONTEXT: ['ip', 'time', 'device']
 }
 
-// 资源属性引用下拉候选（RHS 属性引用）
-// 提供常见业务字段，便于快速配置如 “SUBJECT.id EQUALS RESOURCE.creator_id” 的规则
-// 注：department_id / security_level / member_ids 为项目与报表新增的多维 ABAC 属性
-const RESOURCE_ATTR_OPTIONS = [
-  { label: '创建人 (RESOURCE.creator_id)', value: 'resource.creator_id' },
-  { label: '所属部门 (RESOURCE.department)', value: 'resource.department' },
-  { label: '归属部门ID (RESOURCE.department_id)', value: 'resource.department_id' },
-  { label: '属主 (RESOURCE.owner_id)', value: 'resource.owner_id' },
-  { label: '安全密级 (RESOURCE.security_level)', value: 'resource.security_level' },
-  { label: '成员列表 (RESOURCE.member_ids)', value: 'resource.member_ids' }
+// RHS 属性引用类型候选（镜像 LHS SOURCES，两段式下拉第一步）
+const RHS_TYPES = [
+  { label: '主体 SUBJECT', value: 'SUBJECT' },
+  { label: '资源 RESOURCE', value: 'RESOURCE' },
+  { label: '环境 CONTEXT', value: 'CONTEXT' }
 ]
+
+// RHS 属性引用字段候选（按类型联动，镜像 LHS PATH_OPTIONS 结构，两段式下拉第二步）
+// 注：RESOURCE 含 creator_id / department_id / security_level / member_ids 等多维 ABAC 属性
+const RHS_FIELD_OPTIONS = {
+  SUBJECT: ['id', 'username', 'department'],
+  RESOURCE: ['creator_id', 'department', 'department_id', 'owner_id', 'security_level', 'member_ids'],
+  CONTEXT: ['ip', 'time', 'device']
+}
+
+// 智能默认：左值来源为 RESOURCE 时 RHS 推荐主体属性，反之推荐资源属性
+const defaultRhsType = (lhsSource) => (lhsSource === 'RESOURCE' ? 'SUBJECT' : 'RESOURCE')
+
+// 切换到属性引用时的智能默认值（类型 + 字段拼接，如 "subject.id"）
+const defaultAttrRef = (lhsSource) =>
+  `${defaultRhsType(lhsSource).toLowerCase()}.${lhsSource === 'RESOURCE' ? 'id' : 'creator_id'}`
+
+/**
+ * 拆分属性引用值 "subject.id" -> { type: 'SUBJECT', field: 'id' }。
+ * 支持部分态（如 "subject."），便于两段式下拉独立高亮。
+ * @param {string} value 属性引用路径（后端格式，小写前缀）
+ * @returns {{ type: string, field: string }} 拆分后的类型与字段
+ */
+const splitAttrRef = (value) => {
+  const str = String(value || '')
+  if (!str.includes('.')) return { type: '', field: '' }
+  const [type, ...rest] = str.split('.')
+  return { type: type.toUpperCase(), field: rest.join('.') }
+}
+
+// 当前行 RHS 属性类型（SUBJECT / RESOURCE / CONTEXT，未选时为空）
+const rhsTypeOf = (row) => splitAttrRef(row.value).type
+
+// 当前行 RHS 字段（类型之后的一段，未选时为空）
+const rhsFieldOf = (row) => splitAttrRef(row.value).field
+
+// RHS 类型变化：清空字段，value 仅保留类型前缀（形如 "subject."），待字段补齐
+const setRhsType = (row, type) => {
+  row.value = type ? `${type.toLowerCase()}.` : ''
+  onFieldChange()
+}
+
+// RHS 字段变化：与类型拼合为完整引用（如 "subject.id"），保持后端格式一致
+const setRhsField = (row, field) => {
+  const type = rhsTypeOf(row) || defaultRhsType(row.attributeSource)
+  row.value = field ? `${type.toLowerCase()}.${field}` : ''
+  onFieldChange()
+}
 
 // ---------------- 策略自然语言释义字典（避免魔法值） ----------------
 
@@ -176,10 +218,11 @@ const onFieldChange = () => {
   emit('update:modelValue', [...props.modelValue])
 }
 
-// 当右值类型切换时，清空右值（避免类型语义混用）
+// 当右值类型切换时：清空右值（避免类型语义混用），
+// 切换到属性引用时预选与左值来源互补的默认属性（智能引导）
 const switchValueType = (row, target) => {
   row.valueSource = target
-  row.value = ''
+  row.value = target === 'ATTRIBUTE' ? defaultAttrRef(row.attributeSource) : ''
   onFieldChange()
 }
 </script>
@@ -277,18 +320,33 @@ const switchValueType = (row, target) => {
           placeholder="固定字面量，如 computer"
           @change="onFieldChange"
         />
-        <!-- ATTRIBUTE：下拉选择资源属性引用，支持常见 resource.* 字段 -->
-        <select
-          v-else
-          v-model="row.value"
-          class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-          @change="onFieldChange"
-        >
-          <option value="" disabled>请选择资源属性引用</option>
-          <option v-for="opt in RESOURCE_ATTR_OPTIONS" :key="opt.value" :value="opt.value">
-            {{ opt.label }}
-          </option>
-        </select>
+        <!-- ATTRIBUTE：两段式级联下拉（类型 → 字段），镜像左值设计 -->
+        <div v-else class="flex w-full flex-wrap items-center gap-2">
+          <!-- 第一步：RHS 属性类型（主体 / 资源 / 环境） -->
+          <select
+            :value="rhsTypeOf(row)"
+            class="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+            @change="setRhsType(row, $event.target.value)"
+          >
+            <option value="" disabled>类型</option>
+            <option v-for="t in RHS_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
+          </select>
+
+          <!-- 第二步：RHS 字段（随第一步联动，类型变化时自动清空） -->
+          <select
+            :value="rhsFieldOf(row)"
+            class="min-w-40 flex-1 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+            :disabled="!rhsTypeOf(row)"
+            @change="setRhsField(row, $event.target.value)"
+          >
+            <option value="" disabled>请选择字段</option>
+            <option
+              v-for="f in RHS_FIELD_OPTIONS[rhsTypeOf(row)] || []"
+              :key="f"
+              :value="f"
+            >{{ f }}</option>
+          </select>
+        </div>
       </div>
 
       <!-- 行间 AND 连接徽章 -->

@@ -122,7 +122,8 @@ public class DataScopeInterceptor implements Interceptor {
                 null
         );
         SqlFilterResult filter = policyToSqlCompiler.compileToSqlWhereClause(
-                dataScope.resourceType(), LIST_ACTION, context
+                dataScope.resourceType(), LIST_ACTION, context,
+                dataScope.tableAlias()
         );
         // 记录预览 SQL，供控制器在查询后回显
         UserContextHolder.setLastDisplaySql(filter.displaySql());
