@@ -96,9 +96,9 @@ public class ReportController {
                     "报表编号与名称不能为空");
         }
 
-        // 未显式指定密级时默认 L2（规范第 18 条：默认值赋值）
-        if (!StringUtils.hasText(report.getSecurityLevel())) {
-            report.setSecurityLevel("L2");
+        // 未显式指定密级时默认 2（内部，规范第 18 条：默认值赋值）
+        if (report.getSecurityLevel() == null) {
+            report.setSecurityLevel(2);
         }
 
         // 未显式指定分类时默认 FINANCIAL

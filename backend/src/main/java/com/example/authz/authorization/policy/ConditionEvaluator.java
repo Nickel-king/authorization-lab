@@ -288,12 +288,7 @@ public class ConditionEvaluator {
                     );
 
             case CONTAINS ->
-                    left != null
-                            && right != null
-                            && String.valueOf(left)
-                            .contains(
-                                    String.valueOf(right)
-                            );
+                    containsMatch(left, right);
 
             case STARTS_WITH ->
                     left != null
@@ -312,9 +307,7 @@ public class ConditionEvaluator {
                             );
 
             case IN ->
-                    right instanceof Collection<?>
-                            && ((Collection<?>) right)
-                            .contains(left);
+                    inMatch(left, right);
 
             default ->
                     throw new IllegalArgumentException(
@@ -322,6 +315,84 @@ public class ConditionEvaluator {
                                     + operator
                     );
         };
+    }
+
+    /**
+     * CONTAINS 判断：支持逗号分隔列表语义。
+     * <p>
+     * 当左操作数为逗号分隔列表（如 {@code RESOURCE.member_ids = "1,3"}）时，
+     * 按元素精确匹配右操作数（如 {@code SUBJECT.id = "1"}），避免 "1" 被
+     * 形如 "12" 的元素子串误命中；非列表场景回退为普通子串包含。
+     *
+     * @param left  左操作数（待匹配的字符串/逗号分隔列表）
+     * @param right 右操作数（查找项）
+     * @return 左值是否包含右值
+     */
+    private boolean containsMatch(Object left, Object right) {
+
+        if (left == null || right == null) {
+            return false;
+        }
+
+        String leftStr = String.valueOf(left);
+        String rightStr = String.valueOf(right);
+
+        // 逗号分隔列表：按元素精确匹配
+        if (leftStr.contains(",")) {
+            for (String item : leftStr.split(",")) {
+                if (item != null && item.trim().equals(rightStr)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 非列表：回退为普通子串包含
+        return leftStr.contains(rightStr);
+    }
+
+    /**
+     * IN 判断：左值是否属于右值集合。
+     * <p>
+     * 右值支持两种形态：
+     * <ul>
+     *   <li>Java {@link Collection}（如 {@code [1, 2, 3]}）——直接按元素精确匹配；</li>
+     *   <li>逗号分隔字符串（如 {@code RESOURCE.member_ids = "1,2,3"}）——
+     *       按元素精确匹配，避免 "2" 被形如 "12" 的元素子串误命中。</li>
+     * </ul>
+     *
+     * @param left  左操作数（待匹配的元素，如 {@code SUBJECT.id = 2}）
+     * @param right 右操作数（集合或逗号分隔字符串）
+     * @return 左值是否属于右值集合
+     */
+    private boolean inMatch(Object left, Object right) {
+
+        if (left == null || right == null) {
+            return false;
+        }
+
+        String leftStr = String.valueOf(left);
+
+        // 集合形态：直接按元素精确匹配（兼容旧逻辑）
+        if (right instanceof Collection<?> collection) {
+            return collection.stream()
+                    .map(String::valueOf)
+                    .anyMatch(item -> item.equals(leftStr));
+        }
+
+        // 逗号分隔字符串形态（如 RESOURCE.member_ids = "1,2,3"）
+        String rightStr = String.valueOf(right);
+        if (rightStr.contains(",")) {
+            for (String item : rightStr.split(",")) {
+                if (item != null && item.trim().equals(leftStr)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 单值：等价于 EQUALS
+        return rightStr.trim().equals(leftStr);
     }
 
     /**

@@ -114,6 +114,21 @@ public class EvaluationContextBuilder {
             );
 
             resourceAttributes.put(
+                    "departmentId",
+                    project.getDepartmentId()
+            );
+
+            resourceAttributes.put(
+                    "securityLevel",
+                    project.getSecurityLevel()
+            );
+
+            resourceAttributes.put(
+                    "memberIds",
+                    project.getMemberIds()
+            );
+
+            resourceAttributes.put(
                     "ownerId",
                     project.getOwnerId()
             );
@@ -125,7 +140,7 @@ public class EvaluationContextBuilder {
             );
             resourceAttributes.put(
                     "department_id",
-                    project.getDepartment()
+                    project.getDepartmentId()
             );
         }
 
@@ -169,8 +184,18 @@ public class EvaluationContextBuilder {
             );
 
             resourceAttributes.put(
+                    "departmentId",
+                    report.getDepartmentId()
+            );
+
+            resourceAttributes.put(
                     "securityLevel",
                     report.getSecurityLevel()
+            );
+
+            resourceAttributes.put(
+                    "memberIds",
+                    report.getMemberIds()
             );
 
             // 隐式关系（创建者/归属部门）语义键：不落元组表，供 ABAC 直接比较
@@ -180,7 +205,7 @@ public class EvaluationContextBuilder {
             );
             resourceAttributes.put(
                     "department_id",
-                    report.getDepartment()
+                    report.getDepartmentId()
             );
         }
 

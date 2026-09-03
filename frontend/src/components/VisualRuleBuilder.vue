@@ -43,18 +43,20 @@ const VALUE_TYPES = [
 // 属性路径候选（按来源提供联想下拉）
 const PATH_OPTIONS = {
   SUBJECT: ['id', 'username', 'department', 'level'],
-  RESOURCE: ['department', 'owner_id', 'security_level'],
+  RESOURCE: ['department', 'department_id', 'owner_id', 'security_level', 'member_ids'],
   CONTEXT: ['ip', 'time', 'device']
 }
 
 // 资源属性引用下拉候选（RHS 属性引用）
 // 提供常见业务字段，便于快速配置如 “SUBJECT.id EQUALS RESOURCE.creator_id” 的规则
-// 注：部门字段统一用 resource.department（映射真实列，SQL 下推安全），不重复提供 department_id
+// 注：department_id / security_level / member_ids 为项目与报表新增的多维 ABAC 属性
 const RESOURCE_ATTR_OPTIONS = [
   { label: '创建人 (RESOURCE.creator_id)', value: 'resource.creator_id' },
   { label: '所属部门 (RESOURCE.department)', value: 'resource.department' },
+  { label: '归属部门ID (RESOURCE.department_id)', value: 'resource.department_id' },
   { label: '属主 (RESOURCE.owner_id)', value: 'resource.owner_id' },
-  { label: '安全密级 (RESOURCE.security_level)', value: 'resource.security_level' }
+  { label: '安全密级 (RESOURCE.security_level)', value: 'resource.security_level' },
+  { label: '成员列表 (RESOURCE.member_ids)', value: 'resource.member_ids' }
 ]
 
 // ---------------- 策略自然语言释义字典（避免魔法值） ----------------

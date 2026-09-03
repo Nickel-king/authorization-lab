@@ -40,6 +40,9 @@ CREATE TABLE project (
     name VARCHAR(200) NOT NULL,
     description TEXT,
     department VARCHAR(100),
+    department_id BIGINT,
+    security_level INT NOT NULL DEFAULT 1,
+    member_ids VARCHAR(255),
     owner_id BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -53,6 +56,9 @@ COMMENT ON COLUMN project.id IS '项目主键，自增 ID';
 COMMENT ON COLUMN project.name IS '项目名称';
 COMMENT ON COLUMN project.description IS '项目描述';
 COMMENT ON COLUMN project.department IS '项目所属部门，用于 ABAC 同部门判断';
+COMMENT ON COLUMN project.department_id IS '项目所属部门 ID，指向 sys_department.id，用于组织数据权限';
+COMMENT ON COLUMN project.security_level IS '安全等级（1-3），用于 ABAC 数字比较（> / <）';
+COMMENT ON COLUMN project.member_ids IS '项目成员用户 ID 列表（逗号分隔），用于 ABAC CONTAINS 判断';
 COMMENT ON COLUMN project.owner_id IS '项目属主（创建者）用户 ID';
 COMMENT ON COLUMN project.created_at IS '记录创建时间';
 
@@ -63,12 +69,13 @@ VALUES
     ('lisi', '李四', 'computer'),
     ('wangwu', '王五', 'finance');
 
+-- 注：department_id 需依赖 Step 08 的 sys_department，于 Step 09 统一回填
 INSERT INTO project
-    (name, description, department, owner_id)
+    (name, description, department, department_id, security_level, member_ids, owner_id)
 VALUES
-    ('人工智能研究项目', '计算机学院人工智能研究项目', 'computer', 1),
-    ('大数据平台项目', '计算机学院大数据平台项目', 'computer', 2),
-    ('科研经费分析项目', '财务相关科研分析项目', 'finance', 3);
+    ('人工智能研究项目', '计算机学院人工智能研究项目', 'computer', NULL, 1, '1,3', 1),
+    ('大数据平台项目', '计算机学院大数据平台项目', 'computer', NULL, 2, '2', 2),
+    ('科研经费分析项目', '财务相关科研分析项目', 'finance', NULL, 3, '3', 3);
 
 -- =============================================
 -- Step 01: RBAC（基于角色的访问控制）
@@ -490,8 +497,10 @@ CREATE TABLE report (
     id BIGSERIAL PRIMARY KEY,
     code VARCHAR(100) NOT NULL UNIQUE,
     name VARCHAR(200) NOT NULL,
-    security_level VARCHAR(20) NOT NULL DEFAULT 'L2',
+    security_level INT NOT NULL DEFAULT 1,
     department VARCHAR(100),
+    department_id BIGINT,
+    member_ids VARCHAR(255),
     created_by BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -504,18 +513,20 @@ COMMENT ON TABLE report IS '报表表：可被授权的报表业务资源，含�
 COMMENT ON COLUMN report.id IS '报表主键，自增 ID';
 COMMENT ON COLUMN report.code IS '报表唯一编号';
 COMMENT ON COLUMN report.name IS '报表名称';
-COMMENT ON COLUMN report.security_level IS '安全密级：L1 公开 / L2 内部 / L3 机密';
+COMMENT ON COLUMN report.security_level IS '安全密级：1 公开 / 2 内部 / 3 机密，用于 ABAC 数字比较（> / <）';
 COMMENT ON COLUMN report.department IS '报表所属部门';
+COMMENT ON COLUMN report.department_id IS '报表所属部门 ID，指向 sys_department.id，用于组织数据权限';
+COMMENT ON COLUMN report.member_ids IS '报表可访问用户 ID 列表（逗号分隔），用于 ABAC CONTAINS 判断';
 COMMENT ON COLUMN report.created_by IS '报表生成人用户 ID';
 COMMENT ON COLUMN report.created_at IS '记录创建时间';
 
--- 报表种子数据
+-- 报表种子数据（security_level 语义：1 公开 / 2 内部 / 3 机密；department_id 于 Step 09 回填）
 INSERT INTO report
-    (code, name, security_level, department, created_by)
+    (code, name, security_level, department, department_id, member_ids, created_by)
 VALUES
-    ('RPT-001', '季度研发投入统计表', 'L1', 'computer', 1),
-    ('RPT-002', '科研经费使用明细表', 'L2', 'finance', 3),
-    ('RPT-003', '核心技术预算评估表', 'L3', 'computer', 1);
+    ('RPT-001', '季度研发投入统计表', 1, 'computer', NULL, '1,2', 1),
+    ('RPT-002', '科研经费使用明细表', 2, 'finance', NULL, '3', 3),
+    ('RPT-003', '核心技术预算评估表', 3, 'computer', NULL, '1', 1);
 
 -- 报表资源权限点（report:view / report:export）
 INSERT INTO auth_permission
@@ -736,3 +747,81 @@ FROM auth_role r
 JOIN auth_permission p
     ON p.code = 'report:delete'
 WHERE r.code = 'project_manager';
+
+-- =============================================
+-- Step 09: 资源多维度属性扩展（project / report）
+--   1) 既有库增量新增列：department_id / security_level / member_ids
+--   2) report.security_level 由 VARCHAR(L1/L2/L3) 迁移为 INT(1/2/3)
+--   3) 属性元数据字典同步 + department_id 回填
+-- 说明：全新库在 Step 00/Step 07 已直接建列，本段仅对旧库做幂等迁移。
+-- =============================================
+
+-- project 增量新增（幂等，兼容已存在的表）
+ALTER TABLE project
+    ADD COLUMN IF NOT EXISTS department_id BIGINT,
+    ADD COLUMN IF NOT EXISTS security_level INT NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS member_ids VARCHAR(255);
+
+COMMENT ON COLUMN project.department_id IS '项目所属部门 ID，指向 sys_department.id，用于组织数据权限';
+COMMENT ON COLUMN project.security_level IS '安全等级（1-3），用于 ABAC 数字比较（> / <）';
+COMMENT ON COLUMN project.member_ids IS '项目成员用户 ID 列表（逗号分隔），用于 ABAC CONTAINS 判断';
+
+-- report 增量新增（幂等，兼容已存在的表）
+ALTER TABLE report
+    ADD COLUMN IF NOT EXISTS department_id BIGINT,
+    ADD COLUMN IF NOT EXISTS member_ids VARCHAR(255);
+
+-- report.security_level 类型迁移：VARCHAR(L1/L2/L3) → INT(1/2/3)
+-- 仅当旧库仍为字符串类型时执行；全新库为 INT 时跳过，保证脚本可重复执行。
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'report'
+          AND column_name = 'security_level'
+          AND data_type = 'character varying'
+    ) THEN
+        ALTER TABLE report
+            ALTER COLUMN security_level TYPE INTEGER
+            USING CASE security_level
+                WHEN 'L1' THEN 1
+                WHEN 'L2' THEN 2
+                WHEN 'L3' THEN 3
+                ELSE 1 END;
+    END IF;
+END $$;
+
+ALTER TABLE report
+    ALTER COLUMN security_level SET DEFAULT 1;
+
+COMMENT ON COLUMN report.department_id IS '报表所属部门 ID，指向 sys_department.id，用于组织数据权限';
+COMMENT ON COLUMN report.member_ids IS '报表可访问用户 ID 列表（逗号分隔），用于 ABAC CONTAINS 判断';
+COMMENT ON COLUMN report.security_level IS '安全密级：1 公开 / 2 内部 / 3 机密，用于 ABAC 数字比较（> / <）';
+
+-- 属性元数据字典同步：project/report 新增资源属性，security_level 改为数字类型
+UPDATE auth_attribute
+SET attribute_type = 'NUMBER',
+    enum_values   = NULL
+WHERE category = 'RESOURCE'
+  AND attribute_key = 'security_level';
+
+INSERT INTO auth_attribute
+    (category, attribute_key, label, attribute_type, resource_type, db_column, enum_values)
+VALUES
+    ('RESOURCE', 'department_id', '资源所属部门ID', 'NUMBER', 'project', 'department_id', NULL),
+    ('RESOURCE', 'member_ids', '成员用户ID列表', 'STRING', 'project', 'member_ids', NULL)
+ON CONFLICT (category, attribute_key) DO NOTHING;
+
+-- 回填既有数据的部门归属（依赖 Step 08 的 sys_department）
+UPDATE project
+SET department_id = d.id
+FROM sys_department d
+WHERE d.code = project.department
+  AND project.department_id IS NULL;
+
+UPDATE report
+SET department_id = d.id
+FROM sys_department d
+WHERE d.code = report.department
+  AND report.department_id IS NULL;
